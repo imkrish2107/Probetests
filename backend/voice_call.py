@@ -61,15 +61,42 @@ def get_client(phone_number_id: str):
 async def handle_calls_entry(business: dict, entry: dict, raw: bytes, signature: str) -> bool:
     """Route one calls-field webhook entry through Pipecat. True if handled."""
     from pipecat.transports.whatsapp.api import WhatsAppWebhookRequest
+
+    connect_ids = _entry_connect_ids(entry)
+    if connect_ids and all(i in _RUNNING for i in connect_ids):
+        # Meta resent connect for a live call (our webhook was slow): ack so it
+        # stops retrying, but do NOT re-answer — a second accept moves Meta's
+        # audio to an orphan connection nobody reads.
+        log.info("call %s duplicate connect, acking without re-answer", connect_ids)
+        return True
+    for i in connect_ids:
+        _RUNNING.add(i)  # sync claim: atomic before Pipecat's slow accept
     client = get_client(business["wa_phone_number_id"])
 
     async def on_call(connection, wa_call):
-        await _run_voice_call(business, connection, wa_call)
+        # Background: the webhook must return 200 fast or Meta resends connect.
+        asyncio.create_task(_run_voice_call(business, connection, wa_call))
 
     req = WhatsAppWebhookRequest.model_validate(
         {"object": "whatsapp_business_account", "entry": [entry]})
-    return await client.handle_webhook_request(
-        req, connection_callback=on_call, raw_body=raw, sha256_signature=signature)
+    try:
+        return await client.handle_webhook_request(
+            req, connection_callback=on_call, raw_body=raw, sha256_signature=signature)
+    except Exception:
+        for i in connect_ids:
+            _RUNNING.discard(i)
+        raise
+
+
+def _entry_connect_ids(entry: dict) -> list[str]:
+    """Call ids asking to (re)connect in one calls-field webhook entry."""
+    ids = []
+    for change in (entry.get("changes") or []):
+        calls = ((change.get("value") or {}).get("calls") or [])
+        for call in calls:
+            if isinstance(call, dict) and call.get("event") == "connect" and call.get("id"):
+                ids.append(call["id"])
+    return ids
 
 
 async def warm_greetings() -> None:
@@ -168,10 +195,7 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
 
     caller = getattr(wa_call, "from_", "") or ""
     wa_id = getattr(wa_call, "id", "") or caller
-    if wa_id in _RUNNING:
-        log.info("call %s already handled, skipping duplicate webhook", wa_id)
-        return
-    _RUNNING.add(wa_id)
+    # Owned by handle_calls_entry (claimed at entry, before Pipecat's accept).
     try:
         biz = agent._biz(business["id"])
         langs = biz.get("languages") or ["English"]
