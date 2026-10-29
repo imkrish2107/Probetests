@@ -22,6 +22,7 @@ if not log.handlers:  # uvicorn hides stdlib INFO by default; show our call line
     log.addHandler(_h)
 
 _clients: dict = {}
+_RUNNING: set = {}  # wa_call.id -> True; Meta retries connect webhooks
 _session = None  # shared aiohttp session, set from lifespan
 
 FIRST_LANG = {"English": "en", "Hindi": "hi", "Tamil": "ta", "Telugu": "te",
@@ -107,6 +108,11 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
     from voice_tts import MMSTTSService
 
     caller = getattr(wa_call, "from_", "") or ""
+    wa_id = getattr(wa_call, "id", "") or caller
+    if wa_id in _RUNNING:
+        log.info("call %s already handled, skipping duplicate webhook", wa_id)
+        return
+    _RUNNING.add(wa_id)
     try:
         biz = agent._biz(business["id"])
         langs = biz.get("languages") or ["English"]
@@ -189,8 +195,10 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
         except (asyncio.CancelledError, Exception) as e:
             log.info("call %s pipeline ended: %s", call_id, e)
         watchdog.cancel()
+        _RUNNING.discard(wa_id)
         _finish_call(business["id"], call_id, context)
     except Exception as e:
+        _RUNNING.discard(wa_id)
         log.warning("voice call failed: %s", e)
 
 
