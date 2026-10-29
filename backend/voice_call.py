@@ -123,8 +123,8 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
         stt = MuseSTTService(api_key=key, languages=langs, keywords=[biz.get("name", "")])
         llm = OpenAILLMService(
             api_key=key, base_url="https://api.meta.ai/v1",
-            model=os.getenv("LLM_MODEL", "muse-spark-1.3"),
             settings=OpenAILLMService.Settings(
+                model=os.getenv("LLM_MODEL", "muse-spark-1.3"),
                 system_instruction=agent.build_prompt(biz)))
         tts = MMSTTSService(lang=first)
         context = LLMContext()
@@ -138,10 +138,23 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
         task = PipelineTask(pipeline)
         runner = PipelineRunner()
 
+        greeted = {"via": None}
+
+        async def _greet(via: str):
+            # on_client_connected may never fire: WhatsApp connects audio
+            # before our transport attaches, so the watchdog covers that case.
+            if greeted["via"] is None:
+                greeted["via"] = via
+                context.add_message({"role": "developer", "content": "Greet the caller."})
+                await task.queue_frames([LLMRunFrame()])
+                log.info("call %s greeting via %s", call_id, via)
+
         @transport.event_handler("on_client_connected")
         async def _connected(transport, client):
-            context.add_message({"role": "developer", "content": "Greet the caller."})
-            await task.queue_frames([LLMRunFrame()])
+            try:
+                await _greet("event")
+            except Exception as e:
+                log.warning("call %s greet event failed: %s", call_id, e)
 
         @transport.event_handler("on_client_disconnected")
         async def _gone(transport, client):
@@ -150,10 +163,20 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
             except Exception:
                 pass
 
+        async def _greet_watchdog():
+            await asyncio.sleep(3)
+            try:
+                await _greet("watchdog")
+            except Exception as e:
+                log.warning("call %s greet watchdog failed: %s", call_id, e)
+
+        watchdog = asyncio.create_task(_greet_watchdog())
+
         try:
             await runner.run_task(task)
         except (asyncio.CancelledError, Exception) as e:
             log.info("call %s pipeline ended: %s", call_id, e)
+        watchdog.cancel()
         _finish_call(business["id"], call_id, context)
     except Exception as e:
         log.warning("voice call failed: %s", e)
