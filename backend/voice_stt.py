@@ -60,6 +60,8 @@ class MuseSTTService(STTService):
         self.last_audio_chunk_at = time.monotonic()  # inbound audio heartbeat
         self._pending = bytearray()  # caller audio held across socket blips
         self._max_pending = 10 * 32000  # ~10s; older than that is dropped
+        self.last_rx_at = time.monotonic()  # last frame FROM Meta
+        self._voice_energy_at = 0.0  # last chunk where the caller was loud
 
     async def setup(self, setup: FrameProcessorSetup):
         await super().setup(setup)
@@ -80,6 +82,12 @@ class MuseSTTService(STTService):
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame | None, None]:
         """Ship caller audio (paced); transcripts arrive via the receive loop."""
         self.last_audio_chunk_at = time.monotonic()
+        import audioop
+        try:
+            if audioop.max(audio, 2) > 1000:  # caller actually making sound
+                self._voice_energy_at = time.monotonic()
+        except Exception:
+            pass
         if self._ws is None and not self._reconnecting:
             # Socket died mid-call (question two goes nowhere without this).
             if time.monotonic() - self._last_reconnect > 3.0:
@@ -93,6 +101,19 @@ class MuseSTTService(STTService):
                     log.warning("stt reconnect failed: %s", e)
                 finally:
                     self._reconnecting = False
+        now = time.monotonic()
+        if (self._ws is not None and not self._reconnecting
+                and now - self._voice_energy_at < 8
+                and now - self.last_rx_at > 8):
+            # Caller is loud but Meta answers nothing (not even heartbeats):
+            # socket is wedged open. Recycle it; the backlog resends the words.
+            log.warning("stt wedged (caller loud, Meta quiet %.0fs): recycling socket",
+                        now - self.last_rx_at)
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
         if self._ws is not None:
             try:
                 # One paced queue: live audio joins the backlog, the backlog
@@ -107,7 +128,6 @@ class MuseSTTService(STTService):
                     await self._ws.send_bytes(sent)
                     del self._pending[:ok]
                     self._sent_bytes += ok
-                    import audioop
                     try:
                         peak = audioop.max(sent, 2)
                     except Exception:
@@ -142,6 +162,7 @@ class MuseSTTService(STTService):
             log.warning("stt socket failed: %s", e)
             raise
         log.info("stt socket open")
+        self.last_rx_at = time.monotonic()
         await self._ws.send_json(muse_stt.build_auth_frame(
             self._api_key, self._languages, self._keywords))
         self._rx_task = self.create_task(self._rx_loop())
@@ -167,6 +188,7 @@ class MuseSTTService(STTService):
         import aiohttp
         assert self._ws is not None
         async for msg in self._ws:
+            self.last_rx_at = time.monotonic()
             if msg.type != aiohttp.WSMsgType.TEXT:
                 if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING,
                                 aiohttp.WSMsgType.ERROR):
