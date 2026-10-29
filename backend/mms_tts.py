@@ -80,8 +80,8 @@ def pitch_shift(pcm: bytes, semitones: float) -> bytes:
     dphi = np.diff(phase, axis=0) - omega
     dphi = (dphi + np.pi) % (2 * np.pi) - np.pi
     inst = np.vstack([omega, omega + dphi])  # true freq per input frame
-    n_out = max(2, int(round(n_frames / rate)))
-    pos = np.minimum(np.arange(n_out) * rate, n_frames - 1.001)
+    n_out = max(2, int(round(n_frames * rate)))
+    pos = np.minimum(np.arange(n_out) / rate, n_frames - 1.001)
     i0 = pos.astype(int)
     frac = (pos - i0)[:, None].astype(np.float32)
     i1 = np.minimum(i0 + 1, n_frames - 1)
