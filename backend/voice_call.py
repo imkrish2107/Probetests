@@ -8,6 +8,7 @@ upgrade to per-turn save_turn once calls are green.
 import asyncio
 import logging
 import os
+import time
 
 import agent
 import automation
@@ -120,6 +121,8 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
         LLMContextAggregatorPair,
         LLMUserAggregatorParams,
     )
+    from pipecat.processors.frame_processor import FrameProcessor
+    from pipecat.frames.frames import LLMTextFrame, TranscriptionFrame
     from pipecat.services.openai.llm import OpenAILLMService
     from pipecat.transports.base_transport import TransportParams
     from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
@@ -172,8 +175,25 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
         transport = SmallWebRTCTransport(
             webrtc_connection=connection,
             params=TransportParams(audio_in_enabled=True, audio_out_enabled=True))
-        pipeline = Pipeline([transport.input(), stt, user_agg, llm, tts,
-                             transport.output(), asst_agg])
+
+        class _LLMTimer(FrameProcessor):
+            """Log brain time per reply: user-final -> first LLM token."""
+
+            def __init__(self):
+                super().__init__()
+                self._t0 = None
+
+            async def process_frame(self, frame, direction):
+                await super().process_frame(frame, direction)
+                if isinstance(frame, TranscriptionFrame):
+                    self._t0 = time.monotonic()
+                elif isinstance(frame, LLMTextFrame) and self._t0 is not None:
+                    log.info("llm first token in %.2fs", time.monotonic() - self._t0)
+                    self._t0 = None
+                await self.push_frame(frame, direction)
+
+        pipeline = Pipeline([transport.input(), stt, user_agg, llm, _LLMTimer(),
+                             tts, transport.output(), asst_agg])
         worker = PipelineWorker(pipeline)
         runner = PipelineRunner()
         await runner.add_workers(worker)

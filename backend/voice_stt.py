@@ -7,6 +7,7 @@ loop maps server frames via muse_stt.parse_event into Interim/Transcription fram
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 
@@ -51,6 +52,8 @@ class MuseSTTService(STTService):
         self._sent_bytes = 0
         self._peak = 0
         self._chunks = 0
+        self._reconnecting = False
+        self._last_reconnect = 0.0
 
     async def setup(self, setup: FrameProcessorSetup):
         await super().setup(setup)
@@ -70,6 +73,19 @@ class MuseSTTService(STTService):
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame | None, None]:
         """Ship caller audio (paced); transcripts arrive via the receive loop."""
+        if self._ws is None and not self._reconnecting:
+            # Socket died mid-call (question two goes nowhere without this).
+            if time.monotonic() - self._last_reconnect > 3.0:
+                self._reconnecting = True
+                self._last_reconnect = time.monotonic()
+                try:
+                    await self._disconnect()
+                    await self._connect()
+                    log.info("stt reconnected mid-call")
+                except Exception as e:
+                    log.warning("stt reconnect failed: %s", e)
+                finally:
+                    self._reconnecting = False
         if self._ws is not None:
             try:
                 ok = self._pacer.allow(len(audio))
@@ -135,6 +151,7 @@ class MuseSTTService(STTService):
                 if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING,
                                 aiohttp.WSMsgType.ERROR):
                     log.warning("stt socket closed: %s", msg.type)
+                    self._ws = None  # run_stt reconnects on the next chunk
                     break
                 continue
             try:
