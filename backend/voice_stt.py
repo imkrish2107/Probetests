@@ -14,11 +14,10 @@ from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
     Frame,
-    FrameDirection,
     InterimTranscriptionFrame,
     TranscriptionFrame,
 )
-from pipecat.processors.frame_processor import FrameProcessorSetup
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
 from pipecat.services.stt_service import STTService
 
 import muse_stt
