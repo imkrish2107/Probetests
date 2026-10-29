@@ -33,9 +33,13 @@ def parse_event(msg: dict) -> tuple[str, dict]:
     if kind == "speechEnd":
         return "end", {"turnId": msg.get("turnId")}
     if kind in ("transcript", "partial"):
-        return "partial", {"text": msg.get("text", ""), "turnId": msg.get("turnId")}
+        text = msg.get("transcript", msg.get("text", ""))
+        if msg.get("final", False):
+            return "final", {"text": text, "turnId": msg.get("turnId")}
+        return "partial", {"text": text, "turnId": msg.get("turnId")}
     if kind in ("speechComplete", "final"):
-        return "final", {"text": msg.get("text", ""), "turnId": msg.get("turnId")}
+        text = msg.get("transcript", msg.get("text", ""))
+        return "final", {"text": text, "turnId": msg.get("turnId")}
     return "unknown", {}
 
 
@@ -71,7 +75,11 @@ def selfcheck() -> None:
     assert f["mode"] == "ENDPOINTING" and f["partialMode"] == "CUMULATIVE"
     assert parse_event({"sessionId": "s"}) == ("session", {"id": "s"})
     assert parse_event({"type": "speechStart", "turnId": 3}) == ("start", {"turnId": 3})
-    assert parse_event({"type": "transcript", "text": "nam", "turnId": 3})[0] == "partial"
+    assert parse_event({"type": "transcript", "transcript": "nam",
+                          "final": False, "turnId": 3})[0] == "partial"
+    assert parse_event({"type": "transcript", "transcript": "namaste",
+                          "final": True, "turnId": 3}) == (
+        "final", {"text": "namaste", "turnId": 3})
     assert parse_event({"type": "speechComplete", "text": "namaste", "turnId": 3}) == (
         "final", {"text": "namaste", "turnId": 3})
     assert parse_event({"nope": 1})[0] == "unknown"
