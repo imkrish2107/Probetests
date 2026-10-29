@@ -21,6 +21,26 @@ if not log.handlers:
 LANG_TAG = {"en": "en", "hi": "hi", "ta": "ta", "te": "te",
             "kn": "kn", "bn": "bn", "mr": "mr"}
 
+_CACHE: dict = {}  # (normalized text, lang) -> PCM; greetings replay instantly
+
+
+def _norm(text: str) -> str:
+    import re
+    from mms_tts import strip_lang_tag
+    _, bare = strip_lang_tag(text)
+    return re.sub(r"[^a-z0-9]", "", bare.lower())
+
+
+def warm(text: str, lang: str) -> None:
+    """Synth once and cache (blocking: call in an executor, at startup/call open)."""
+    key = (_norm(text), lang)
+    if key in _CACHE:
+        return
+    from mms_tts import speak, strip_lang_tag
+    tag, bare = strip_lang_tag(text)
+    if bare.strip():
+        _CACHE[key] = speak(bare, tag if tag in LANG_TAG else lang)
+
 
 class MMSTTSService(TTSService):
     def __init__(self, *, lang: str = "hi", sample_rate: int = 16000, **kwargs):
@@ -35,16 +55,27 @@ class MMSTTSService(TTSService):
         lang = tag if tag in LANG_TAG else self._lang
         loop = asyncio.get_running_loop()
         step = int(self.sample_rate * 2 * 0.5)  # half-second chunks
+        key = (_norm(text), lang)
+        if key in _CACHE:
+            pcm = _CACHE[key]
+            for i in range(0, len(pcm), step):
+                yield TTSAudioRawFrame(pcm[i:i + step], self.sample_rate, 1)
+            return
         # Synth + stream one sentence at a time: first audio out after one
         # sentence, not after the whole reply.
+        full = bytearray()
         for sent in split_sentences(text):
             try:
                 pcm = await loop.run_in_executor(None, speak_one, sent, lang)
             except Exception as e:
                 log.warning("tts synth failed (%s): %s", lang, e)
                 return
+            full += pcm
             for i in range(0, len(pcm), step):
                 yield TTSAudioRawFrame(pcm[i:i + step], self.sample_rate, 1)
+        if len(_CACHE) >= 20:  # short replies only; bound the RAM
+            _CACHE.pop(next(iter(_CACHE)))
+        _CACHE[key] = bytes(full)
 
 
 def selfcheck() -> None:

@@ -40,9 +40,9 @@ def llm_config() -> dict:
 
 def greeting(business_name: str, first_lang: str) -> str:
     tag = {"English": "en", "Hindi": "hi", "Tamil": "ta"}.get(first_lang, "en")
-    line = {"en": f"Hi, this is {business_name}'s AI assistant. How can I help?",
-            "hi": f"नमस्ते, मैं {business_name} का AI सहायक हूँ। मैं आपकी क्या मदद कर सकता हूँ?",
-            "ta": f"வணக்கம், நான் {business_name}-இன் AI உதவியாளர். உங்களுக்கு எப்படி உதவலாம்?"}.get(tag, "")
+    line = {"en": f"Hi, thanks for calling {business_name}! I'm Meera, how can I help you today?",
+            "hi": f"नमस्ते, {business_name} में कॉल करने के लिए शुक्रिया! मैं मीरा हूँ, बताइए मैं आपकी क्या मदद कर सकती हूँ?",
+            "ta": f"வணக்கம், {business_name}-ஐ அழைத்ததற்கு நன்றி! நான் மீரா, உங்களுக்கு எப்படி உதவலாம்?"}.get(tag, "")
     return f"[{tag}] {line}"
 
 
@@ -85,7 +85,7 @@ def selfcheck() -> None:
         c.execute("INSERT INTO calls (business_id, contact_id) VALUES (?,?)", (1, 1))
         c.commit()
     assert greeting("Your Cafe", "Hindi").startswith("[hi]")
-    assert "AI assistant" in greeting("Your Cafe", "English")
+    assert "Meera" in greeting("Your Cafe", "English")
     save_turn(1, "caller", "hello", "en", tokens_in=10, tokens_out=5, audio_s=3.0)
     with db.connect() as c:
         assert c.execute("SELECT COUNT(*) FROM transcripts").fetchone()[0] == 1

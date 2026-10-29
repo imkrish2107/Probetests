@@ -68,6 +68,7 @@ export async function saveSetup(form: FormData) {
     timezone: form.get("timezone"),
     slot_minutes: Number(form.get("slot_minutes")),
     seats_per_slot: Number(form.get("seats_per_slot")),
+    greeting: form.get("greeting"),
     owner_whatsapp: form.get("owner_whatsapp"),
     wa_phone_number_id: form.get("wa_phone_number_id"),
     wa_display_number: form.get("wa_display_number"),

@@ -71,6 +71,26 @@ async def handle_calls_entry(business: dict, entry: dict, raw: bytes, signature:
         req, connection_callback=on_call, raw_body=raw, sha256_signature=signature)
 
 
+async def warm_greetings() -> None:
+    """Pre-synth every business greeting at startup (blocking work in executor)."""
+    import json
+    from voice_tts import warm as _warm
+    with db.connect() as conn:
+        rows = conn.execute("SELECT name, languages, greeting FROM businesses").fetchall()
+    loop = asyncio.get_running_loop()
+    for r in rows:
+        try:
+            langs = json.loads(r["languages"]) if isinstance(r["languages"], str) else r["languages"]
+        except ValueError:
+            langs = ["English"]
+        first_lang = (langs or ["English"])[0]
+        line = (r["greeting"] or "").strip() or call_bot.greeting(r["name"] or "", first_lang)
+        try:
+            await loop.run_in_executor(None, _warm, line, FIRST_LANG.get(first_lang, "hi"))
+        except Exception as e:
+            log.warning("greeting warm failed for %s: %s", r["name"], e)
+
+
 def _voice_contact(business_id: int, wa_user_id: str, phone: str = "") -> int:
     import datetime as dt
     now = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -106,6 +126,7 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
 
     from voice_stt import MuseSTTService
     from voice_tts import MMSTTSService
+    from voice_tts import warm as _warm_greeting
 
     caller = getattr(wa_call, "from_", "") or ""
     wa_id = getattr(wa_call, "id", "") or caller
@@ -129,6 +150,8 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
             name = conn.execute("SELECT name FROM contacts WHERE id = ?",
                                 (cid,)).fetchone()[0] or caller
         call_bot.register_live(call_id, name, langs[0])
+        greet_text = ((biz.get("greeting") or "").strip()
+                      or call_bot.greeting(biz.get("name", ""), langs[0]))
 
         key = os.getenv("MODEL_API_KEY", "")
         stt_langs = [FIRST_LANG.get(l, "en") for l in langs]
@@ -163,8 +186,12 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
             if greeted["via"] is None:
                 greeted["via"] = via
                 # Meta rejects a run with no user/tool message, so the greet
-                # trigger is a plain "Hello" from the caller side.
-                context.add_message({"role": "user", "content": "Hello"})
+                # trigger rides on a caller "Hello"; the opening line itself is
+                # fixed (custom greeting or the Meera default), pre-synthed.
+                context.add_message({
+                    "role": "user",
+                    "content": f"Hello. Open with exactly this line and nothing else: {greet_text}",
+                })
                 await worker.queue_frames([LLMRunFrame()])
                 log.info("call %s greeting via %s", call_id, via)
 
@@ -190,12 +217,15 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                 log.warning("call %s greet watchdog failed: %s", call_id, e)
 
         watchdog = asyncio.create_task(_greet_watchdog())
+        warm_task = asyncio.create_task(asyncio.get_running_loop().run_in_executor(
+            None, _warm_greeting, greet_text, first))  # greeting audio ready early
 
         try:
             await runner.run()
         except (asyncio.CancelledError, Exception) as e:
             log.info("call %s pipeline ended: %s", call_id, e)
         watchdog.cancel()
+        warm_task.cancel()
         _RUNNING.discard(wa_id)
         _finish_call(business["id"], call_id, context)
     except Exception as e:

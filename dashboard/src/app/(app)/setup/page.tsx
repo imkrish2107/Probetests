@@ -21,6 +21,15 @@ export default async function SetupPage({
             <input className="input" name="name" defaultValue={biz.name ?? ""} required />
           </label>
           <label>
+            Greeting (what callers hear first, max 300 chars; blank uses the default)
+            <textarea
+              className="input"
+              name="greeting"
+              rows={2}
+              defaultValue={biz.greeting ?? ""}
+            />
+          </label>
+          <label>
             Time zone (IANA, e.g. Asia/Kolkata)
             <input className="input" name="timezone" defaultValue={biz.timezone ?? ""} />
           </label>

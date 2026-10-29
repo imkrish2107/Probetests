@@ -48,6 +48,11 @@ async def lifespan(app: FastAPI):
             None, mms_tts.get_voice, "en")
     except Exception as e:
         log.warning("tts preload failed: %s", e)
+    try:  # pre-synth greetings so calls open instantly, no first-line stutter
+        import voice_call
+        await voice_call.warm_greetings()
+    except Exception as e:
+        log.warning("greeting warm failed: %s", e)
     yield
     task.cancel()
     if getattr(app.state, "wa_session", None):
@@ -348,7 +353,7 @@ async def me(request: Request, authorization: str | None = Header(default=None))
 
 BUSINESS_FIELDS = ["name", "wa_phone_number_id", "wa_display_number", "timezone",
                    "hours", "slot_minutes", "seats_per_slot", "menu", "prices",
-                   "faqs", "languages", "owner_whatsapp", "crm_webhook_url"]
+                   "faqs", "languages", "greeting", "owner_whatsapp", "crm_webhook_url"]
 JSON_FIELDS = {"hours", "menu", "faqs", "languages"}
 
 DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -388,6 +393,10 @@ def validate_business(updates: dict):
                 not isinstance(f, dict) or "q" not in f or "a" not in f
                 for f in updates["faqs"]):
             return api_error("invalid", "faqs: items need q and a", 422)
+    if "greeting" in updates:
+        g = updates["greeting"]
+        if not isinstance(g, str) or not g.strip() or len(g) > 300:
+            return api_error("invalid", "greeting: 1-300 chars of text", 422)
     for f in ("slot_minutes", "seats_per_slot"):
         if f in updates and (not isinstance(updates[f], int) or isinstance(updates[f], bool)
                              or updates[f] <= 0):

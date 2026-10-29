@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS businesses (
   slot_minutes INTEGER DEFAULT 30, seats_per_slot INTEGER DEFAULT 10,
   menu TEXT DEFAULT '[]', prices TEXT DEFAULT '', faqs TEXT DEFAULT '[]',
   languages TEXT DEFAULT '["English"]',
+  greeting TEXT DEFAULT '',
   owner_whatsapp TEXT DEFAULT '', crm_webhook_url TEXT DEFAULT '',
   created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -82,3 +83,6 @@ def connect() -> sqlite3.Connection:
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(businesses)")]
+        if "greeting" not in cols:  # existing DBs predate the greeting field
+            conn.execute("ALTER TABLE businesses ADD COLUMN greeting TEXT DEFAULT ''")
