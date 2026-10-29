@@ -54,7 +54,7 @@ class MMSTTSService(TTSService):
             return
         lang = tag if tag in LANG_TAG else self._lang
         loop = asyncio.get_running_loop()
-        step = int(self.sample_rate * 2 * 0.5)  # half-second chunks
+        step = int(self.sample_rate * 2 * 1.0)  # 1s chunks: fewer boundary gaps
         key = (_norm(text), lang)
         if key in _CACHE:
             pcm = _CACHE[key]
