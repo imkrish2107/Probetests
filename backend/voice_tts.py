@@ -12,6 +12,11 @@ from pipecat.frames.frames import Frame, TTSAudioRawFrame
 from pipecat.services.tts_service import TTSService
 
 log = logging.getLogger("voice_tts")
+log.setLevel(logging.INFO)
+if not log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s voice_tts %(levelname)s %(message)s"))
+    log.addHandler(_h)
 
 LANG_TAG = {"en": "en", "hi": "hi", "ta": "ta", "te": "te",
             "kn": "kn", "bn": "bn", "mr": "mr"}

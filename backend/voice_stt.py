@@ -23,6 +23,11 @@ from pipecat.services.stt_service import STTService
 import muse_stt
 
 log = logging.getLogger("voice_stt")
+log.setLevel(logging.INFO)
+if not log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s voice_stt %(levelname)s %(message)s"))
+    log.addHandler(_h)
 
 
 def _now() -> str:

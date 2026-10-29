@@ -15,6 +15,11 @@ import call_bot
 import db
 
 log = logging.getLogger("voice_call")
+log.setLevel(logging.INFO)
+if not log.handlers:  # uvicorn hides stdlib INFO by default; show our call lines
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s voice_call %(levelname)s %(message)s"))
+    log.addHandler(_h)
 
 _clients: dict = {}
 _session = None  # shared aiohttp session, set from lifespan
