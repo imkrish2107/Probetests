@@ -132,7 +132,12 @@ def _refresh_audio_track(transport, connection) -> str:
         if client is None or not hasattr(client, "_audio_input_track"):
             return "transport client has no audio slot"
         client._audio_input_track = fresh
-        return "switched to live track"
+        inner = getattr(fresh, "_track", None)
+        detail = "{}/{}/{}".format(
+            getattr(inner, "kind", "?"),
+            str(getattr(inner, "id", "?"))[:8],
+            getattr(inner, "readyState", "?"))
+        return f"switched to live track ({detail})"
     except Exception as e:
         return f"refresh failed: {e}"
 
@@ -312,8 +317,6 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                     if stt.last_voice_at > voice_state.get("nudge_at", 0):
                         voice_state["nudged"] = False
                     now = time.monotonic()
-                    if now - stt.last_audio_chunk_at < 8:
-                        voice_state["track_refreshed"] = False  # audio flows: re-arm
                     if (now - stt.last_audio_chunk_at > 8
                             and now - voice_state.get("audio_warned_at", 0) > 10):
                         voice_state["audio_warned_at"] = now
@@ -321,10 +324,11 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                                     " caller may be talking unheard",
                                     call_id, now - stt.last_audio_chunk_at)
                     if (now - stt.last_audio_chunk_at > 8
-                            and not voice_state.get("track_refreshed")):
-                        # Dead voice pipe with a live call = stale track after a
-                        # mid-call swap. Re-point the reader at the live track.
-                        voice_state["track_refreshed"] = True
+                            and now - voice_state.get("track_refreshed_at", 0) > 10):
+                        # Dead voice pipe on a live call = stale track after a
+                        # mid-call swap (or one still arriving). Re-point the
+                        # reader; retry while dead in case the live track lands late.
+                        voice_state["track_refreshed_at"] = now
                         log.warning("call %s: refreshing audio track: %s",
                                     call_id, _refresh_audio_track(transport, connection))
                     quiet = now - max(voice_state["last_heard"],
