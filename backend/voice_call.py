@@ -109,6 +109,32 @@ def _voice_contact(business_id: int, wa_user_id: str, phone: str = "") -> int:
         return cur.lastrowid
 
 
+def _refresh_audio_track(transport, connection) -> str:
+    """Re-point the transport at the live audio track after a mid-call swap.
+
+    Meta renegotiates the caller audio track mid-call; Pipecat's reader keeps
+    the stale wrapper forever (Timeout every 2s, caller unheard). Dropping the
+    connection's cached wrapper makes the next read wrap the live receiver.
+    All private access is guarded: worst case the refresh is a no-op.
+    """
+    try:
+        get_track = getattr(connection, "audio_input_track", None)
+        if get_track is None:
+            return "no audio_input_track on connection"
+        track_map = getattr(connection, "_track_map", None)
+        if isinstance(track_map, dict):
+            track_map.clear()
+        fresh = get_track()
+        if fresh is None:
+            return "no live audio track"
+        if hasattr(transport, "_audio_input_track"):
+            transport._audio_input_track = fresh
+            return "switched to live track"
+        return "transport has no audio slot"
+    except Exception as e:
+        return f"refresh failed: {e}"
+
+
 async def _run_voice_call(business: dict, connection, wa_call) -> None:
     """Full duplex loop for one answered call. Never raises into the webhook."""
     from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -284,12 +310,21 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                     if stt.last_voice_at > voice_state.get("nudge_at", 0):
                         voice_state["nudged"] = False
                     now = time.monotonic()
+                    if now - stt.last_audio_chunk_at < 8:
+                        voice_state["track_refreshed"] = False  # audio flows: re-arm
                     if (now - stt.last_audio_chunk_at > 8
                             and now - voice_state.get("audio_warned_at", 0) > 10):
                         voice_state["audio_warned_at"] = now
                         log.warning("call %s: no inbound caller audio for %.0fs —"
                                     " caller may be talking unheard",
                                     call_id, now - stt.last_audio_chunk_at)
+                    if (now - stt.last_audio_chunk_at > 8
+                            and not voice_state.get("track_refreshed")):
+                        # Dead voice pipe with a live call = stale track after a
+                        # mid-call swap. Re-point the reader at the live track.
+                        voice_state["track_refreshed"] = True
+                        log.warning("call %s: refreshing audio track: %s",
+                                    call_id, _refresh_audio_track(transport, connection))
                     quiet = now - max(voice_state["last_heard"],
                                       stt.last_voice_at, tts.last_audio_at)
                     if quiet < 10.0:
