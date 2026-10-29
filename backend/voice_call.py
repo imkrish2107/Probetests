@@ -123,6 +123,12 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
     )
     from pipecat.processors.frame_processor import FrameProcessor
     from pipecat.frames.frames import LLMTextFrame, TranscriptionFrame
+    from pipecat.frames.frames import (
+        BotStartedSpeakingFrame,
+        BotStoppedSpeakingFrame,
+        TTSAudioRawFrame,
+        UserStartedSpeakingFrame,
+    )
     from pipecat.services.openai.llm import OpenAILLMService
     from pipecat.transports.base_transport import TransportParams
     from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
@@ -176,6 +182,11 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
             webrtc_connection=connection,
             params=TransportParams(audio_in_enabled=True, audio_out_enabled=True))
 
+        # Last-heard clock for the 10s silence rule: any caller or bot frame
+        # resets it, so we only hang up on true dead air, never mid-reply.
+        voice_state = {"last_heard": time.monotonic(), "bot_speaking": False,
+                       "goodbye": False}
+
         class _LLMTimer(FrameProcessor):
             """Log brain time per reply: user-final -> first LLM token."""
 
@@ -185,11 +196,20 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
 
             async def process_frame(self, frame, direction):
                 await super().process_frame(frame, direction)
-                if isinstance(frame, TranscriptionFrame):
+                if isinstance(frame, (TranscriptionFrame, UserStartedSpeakingFrame)):
                     self._t0 = time.monotonic()
+                    voice_state["last_heard"] = self._t0
                 elif isinstance(frame, LLMTextFrame) and self._t0 is not None:
                     log.info("llm first token in %.2fs", time.monotonic() - self._t0)
                     self._t0 = None
+                    voice_state["last_heard"] = time.monotonic()
+                elif isinstance(frame, BotStartedSpeakingFrame):
+                    voice_state["bot_speaking"] = True
+                    voice_state["last_heard"] = time.monotonic()
+                elif isinstance(frame, (BotStoppedSpeakingFrame, TTSAudioRawFrame)):
+                    if isinstance(frame, BotStoppedSpeakingFrame):
+                        voice_state["bot_speaking"] = False
+                    voice_state["last_heard"] = time.monotonic()
                 await self.push_frame(frame, direction)
 
         pipeline = Pipeline([transport.input(), stt, user_agg, llm, _LLMTimer(),
@@ -248,12 +268,48 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                 None, _warm_greeting, greet_text, first)  # greeting audio ready early
         warm_task = asyncio.create_task(_warm())
 
+        async def _silence_watchdog():
+            # Hang up ONLY after 10s of true dead air: no caller speech, no bot
+            # audio, bot not speaking. Goodbye first, then disconnect.
+            try:
+                while True:
+                    await asyncio.sleep(1)
+                    if voice_state["goodbye"]:
+                        return
+                    quiet = time.monotonic() - voice_state["last_heard"]
+                    if quiet >= 10.0 and not voice_state["bot_speaking"]:
+                        voice_state["goodbye"] = True
+                        log.info("call %s: %.0fs silence, saying goodbye", call_id, quiet)
+                        try:
+                            context.add_message({
+                                "role": "user",
+                                "content": "The caller has gone quiet. Say one short goodbye"
+                                           " sentence in the call language and nothing else.",
+                            })
+                            await worker.queue_frames([LLMRunFrame()])
+                            await asyncio.sleep(8)  # let the goodbye play
+                        except Exception as e:
+                            log.warning("call %s goodbye failed: %s", call_id, e)
+                        for step in ("disconnect", "cancel"):
+                            try:
+                                if step == "disconnect":
+                                    await connection.disconnect()
+                                else:
+                                    await runner.cancel()
+                            except Exception:
+                                pass
+                        return
+            except asyncio.CancelledError:
+                pass
+        silence_task = asyncio.create_task(_silence_watchdog())
+
         try:
             await runner.run()
         except (asyncio.CancelledError, Exception):
             log.exception("call %s pipeline ended", call_id)
         watchdog.cancel()
         warm_task.cancel()
+        silence_task.cancel()
         _RUNNING.discard(wa_id)
         _finish_call(business["id"], call_id, context)
     except Exception as e:

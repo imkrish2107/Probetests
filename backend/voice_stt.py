@@ -17,6 +17,8 @@ from pipecat.frames.frames import (
     Frame,
     InterimTranscriptionFrame,
     TranscriptionFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
 from pipecat.services.stt_service import STTService
@@ -171,6 +173,15 @@ class MuseSTTService(STTService):
                 log.info("stt final: %.80s", text)
                 await self.push_frame(TranscriptionFrame(
                     text, self._user_id, _now(), None, result={"text": text}))
+            elif kind == "start":
+                # Meta says the caller started talking: tell the pipeline so the
+                # user aggregator opens a turn (and the bot can barge in).
+                log.info("stt speech start (turn %s)", payload.get("turnId"))
+                await self.push_frame(UserStartedSpeakingFrame())
+            elif kind == "end":
+                # Meta found the end of the turn: close it so the LLM fires.
+                log.info("stt speech end (turn %s)", payload.get("turnId"))
+                await self.push_frame(UserStoppedSpeakingFrame())
             elif kind == "unknown":
                 log.info("stt unknown frame: %.200s", msg.data)
 
