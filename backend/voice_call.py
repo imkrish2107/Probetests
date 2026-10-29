@@ -153,7 +153,9 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
             # before our transport attaches, so the watchdog covers that case.
             if greeted["via"] is None:
                 greeted["via"] = via
-                context.add_message({"role": "developer", "content": "Greet the caller."})
+                # Meta rejects a run with no user/tool message, so the greet
+                # trigger is a plain "Hello" from the caller side.
+                context.add_message({"role": "user", "content": "Hello"})
                 await worker.queue_frames([LLMRunFrame()])
                 log.info("call %s greeting via %s", call_id, via)
 
