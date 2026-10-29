@@ -123,7 +123,7 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
     )
     from pipecat.processors.frame_processor import FrameProcessor
     from pipecat.frames.frames import LLMTextFrame, TranscriptionFrame
-    from pipecat.frames.frames import UserStartedSpeakingFrame
+    from pipecat.frames.frames import UserStartedSpeakingFrame, UserStoppedSpeakingFrame
     from pipecat.services.openai.llm import OpenAILLMService
     from pipecat.transports.base_transport import TransportParams
     from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
@@ -194,6 +194,9 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
             async def process_frame(self, frame, direction):
                 await super().process_frame(frame, direction)
                 if isinstance(frame, (TranscriptionFrame, UserStartedSpeakingFrame)):
+                    voice_state["last_heard"] = time.monotonic()
+                elif isinstance(frame, UserStoppedSpeakingFrame):
+                    # Caller finished: this is the honest start of brain time.
                     self._t0 = time.monotonic()
                     voice_state["last_heard"] = self._t0
                 elif isinstance(frame, LLMRunFrame):
@@ -261,44 +264,63 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
         warm_task = asyncio.create_task(_warm())
 
         async def _silence_watchdog():
-            # Hang up ONLY after 10s of true dead air: no caller speech, no bot
-            # audio, no reply being generated. Goodbye first, then disconnect —
-            # unless the caller speaks up during the goodbye (then we stay).
+            # Goodbye ONLY when neither side has spoken for 10s. Bot audio and
+            # caller speech both reset the clock. The first quiet stretch gets
+            # a spoken nudge ("still there?"); only a second quiet stretch
+            # after the nudge gets goodbye. Caller speech re-arms the nudge.
             try:
                 while True:
                     await asyncio.sleep(1)
                     if voice_state["goodbye"]:
                         return
+                    if stt.last_voice_at > voice_state.get("nudge_at", 0):
+                        voice_state["nudged"] = False
                     now = time.monotonic()
                     quiet = now - max(voice_state["last_heard"],
                                       stt.last_voice_at, tts.last_audio_at)
-                    if quiet >= 10.0:
-                        voice_state["goodbye"] = True
-                        log.info("call %s: %.0fs silence, saying goodbye", call_id, quiet)
+                    if quiet < 10.0:
+                        continue
+                    if not voice_state.get("nudged"):
+                        voice_state["nudged"] = True
+                        voice_state["nudge_at"] = now
+                        log.info("call %s: %.0fs silence, nudging", call_id, quiet)
                         try:
                             context.add_message({
                                 "role": "user",
-                                "content": "The caller has gone quiet. Say one short goodbye"
-                                           " sentence in the call language and nothing else.",
+                                "content": "The caller has gone quiet. Say one very short"
+                                           " check-in like 'Are you still there?' in the call"
+                                           " language and nothing else.",
                             })
                             await worker.queue_frames([LLMRunFrame()])
-                            await asyncio.sleep(8)  # let the goodbye play
                         except Exception as e:
-                            log.warning("call %s goodbye failed: %s", call_id, e)
-                        if stt.last_voice_at > now:
-                            # Caller spoke during the goodbye: stay on the call.
-                            voice_state["goodbye"] = False
-                            log.info("call %s: caller came back, staying", call_id)
-                            continue
-                        for step in ("disconnect", "cancel"):
-                            try:
-                                if step == "disconnect":
-                                    await connection.disconnect()
-                                else:
-                                    await runner.cancel()
-                            except Exception:
-                                pass
-                        return
+                            log.warning("call %s nudge failed: %s", call_id, e)
+                        continue
+                    voice_state["goodbye"] = True
+                    log.info("call %s: %.0fs silence, saying goodbye", call_id, quiet)
+                    try:
+                        context.add_message({
+                            "role": "user",
+                            "content": "The caller has gone quiet. Say one short goodbye"
+                                       " sentence in the call language and nothing else.",
+                        })
+                        await worker.queue_frames([LLMRunFrame()])
+                        await asyncio.sleep(8)  # let the goodbye play
+                    except Exception as e:
+                        log.warning("call %s goodbye failed: %s", call_id, e)
+                    if stt.last_voice_at > now:
+                        # Caller spoke during the goodbye: stay on the call.
+                        voice_state["goodbye"] = False
+                        log.info("call %s: caller came back, staying", call_id)
+                        continue
+                    for step in ("disconnect", "cancel"):
+                        try:
+                            if step == "disconnect":
+                                await connection.disconnect()
+                            else:
+                                await runner.cancel()
+                        except Exception:
+                            pass
+                    return
             except asyncio.CancelledError:
                 pass
         silence_task = asyncio.create_task(_silence_watchdog())
