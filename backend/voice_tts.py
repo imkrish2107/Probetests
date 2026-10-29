@@ -28,21 +28,23 @@ class MMSTTSService(TTSService):
         self._lang = lang if lang in LANG_TAG else "hi"
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
-        from mms_tts import speak, strip_lang_tag
+        from mms_tts import speak_one, split_sentences, strip_lang_tag
         tag, bare = strip_lang_tag(text)
-        bare = bare.strip()
-        if not bare:
+        if not bare.strip():
             return
         lang = tag if tag in LANG_TAG else self._lang
         loop = asyncio.get_running_loop()
-        try:
-            pcm = await loop.run_in_executor(None, speak, bare, lang)
-        except Exception as e:
-            log.warning("tts synth failed (%s): %s", lang, e)
-            return
         step = int(self.sample_rate * 2 * 0.5)  # half-second chunks
-        for i in range(0, len(pcm), step):
-            yield TTSAudioRawFrame(pcm[i:i + step], self.sample_rate, 1)
+        # Synth + stream one sentence at a time: first audio out after one
+        # sentence, not after the whole reply.
+        for sent in split_sentences(text):
+            try:
+                pcm = await loop.run_in_executor(None, speak_one, sent, lang)
+            except Exception as e:
+                log.warning("tts synth failed (%s): %s", lang, e)
+                return
+            for i in range(0, len(pcm), step):
+                yield TTSAudioRawFrame(pcm[i:i + step], self.sample_rate, 1)
 
 
 def selfcheck() -> None:

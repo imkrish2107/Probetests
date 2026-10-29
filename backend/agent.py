@@ -49,7 +49,7 @@ def build_prompt(biz: dict) -> str:
 Speak {langs[0]} first; then reply in the caller's language, native script, starting every reply with a tag like [hi].
 Hours: {'; '.join(days)}. Tables: {biz.get('slot_minutes', 30)}-min slots, {biz.get('seats_per_slot', 10)} seats each.
 Menu:\n{menu}\nPrices: {biz.get('prices') or '-'}\n{('FAQs:\n' + faqs) if faqs else ''}
-Rules: allergy/ingredient questions ONLY from the menu above, else make a task. Complaints and refunds are always urgent tasks. "Let me talk to someone" means an urgent callback task (no live transfer exists). If closed, say so and still take bookings/messages. Use tools for every booking or task; read bookings back before ending; then end_call."""
+Rules: keep every reply to 1-2 short sentences (under 40 words); this is a voice call, not chat. Allergy/ingredient questions ONLY from the menu above, else make a task. Complaints and refunds are always urgent tasks. "Let me talk to someone" means an urgent callback task (no live transfer exists). If closed, say so and still take bookings/messages. Use tools for every booking or task; read bookings back before ending; then end_call."""
 
 
 def context_suffix(today_iso: str, weekday: str, tz: str) -> str:

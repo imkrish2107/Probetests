@@ -47,16 +47,20 @@ def get_voice(lang: str):
     return _voices[code]
 
 
-def speak(text: str, lang: str) -> bytes:
-    """Full text -> 16kHz PCM bytes, sentence by sentence (first chunk returns fast)."""
+def speak_one(sent: str, lang: str) -> bytes:
+    """One sentence -> 16kHz PCM bytes (voice cached; worker-thread safe)."""
     import torch  # type: ignore
     model, tok = get_voice(lang)
-    out = bytearray()
     with torch.inference_mode():
-        for sent in split_sentences(text):
-            ids = tok(sent, return_tensors="pt").input_ids
-            wav = model(ids).waveform.squeeze().cpu().numpy()
-            out += (wav * 32767).astype("<i2").tobytes()
+        wav = model(tok(sent, return_tensors="pt").input_ids).waveform.squeeze().cpu().numpy()
+    return (wav * 32767).astype("<i2").tobytes()
+
+
+def speak(text: str, lang: str) -> bytes:
+    """Full text -> 16kHz PCM bytes, sentence by sentence (see speak_one)."""
+    out = bytearray()
+    for sent in split_sentences(text):
+        out += speak_one(sent, lang)
     return bytes(out)
 
 
