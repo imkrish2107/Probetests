@@ -131,7 +131,8 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
         call_bot.register_live(call_id, name, langs[0])
 
         key = os.getenv("MODEL_API_KEY", "")
-        stt = MuseSTTService(api_key=key, languages=langs, keywords=[biz.get("name", "")])
+        stt_langs = [FIRST_LANG.get(l, "en") for l in langs]
+        stt = MuseSTTService(api_key=key, languages=stt_langs, keywords=[biz.get("name", "")])
         llm = OpenAILLMService(
             api_key=key, base_url="https://api.meta.ai/v1",
             settings=OpenAILLMService.Settings(
