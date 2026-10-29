@@ -58,6 +58,8 @@ class MuseSTTService(STTService):
         self._last_reconnect = 0.0
         self.last_voice_at = time.monotonic()  # read by the silence watchdog
         self.last_audio_chunk_at = time.monotonic()  # inbound audio heartbeat
+        self._pending = bytearray()  # caller audio held across socket blips
+        self._max_pending = 10 * 32000  # ~10s; older than that is dropped
 
     async def setup(self, setup: FrameProcessorSetup):
         await super().setup(setup)
@@ -93,13 +95,21 @@ class MuseSTTService(STTService):
                     self._reconnecting = False
         if self._ws is not None:
             try:
-                ok = self._pacer.allow(len(audio))
+                # One paced queue: live audio joins the backlog, the backlog
+                # drains at realtime pace, so blips delay words instead of
+                # eating them. Cap bounds the memory.
+                self._pending += audio
+                if len(self._pending) > self._max_pending:
+                    del self._pending[:len(self._pending) - self._max_pending]
+                ok = self._pacer.allow(len(self._pending))
                 if ok:
-                    await self._ws.send_bytes(audio[:ok])
+                    sent = bytes(self._pending[:ok])
+                    await self._ws.send_bytes(sent)
+                    del self._pending[:ok]
                     self._sent_bytes += ok
                     import audioop
                     try:
-                        peak = audioop.max(audio[:ok], 2)
+                        peak = audioop.max(sent, 2)
                     except Exception:
                         peak = -1
                     if peak > self._peak:
@@ -111,6 +121,11 @@ class MuseSTTService(STTService):
             except Exception as e:
                 log.warning("stt send failed, dropping socket: %s", e)
                 self._ws = None
+        else:
+            # Socket down: hold the words (capped) instead of dropping them.
+            self._pending += audio
+            if len(self._pending) > self._max_pending:
+                del self._pending[:len(self._pending) - self._max_pending]
         yield None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):

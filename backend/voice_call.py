@@ -249,6 +249,14 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
             except Exception:
                 pass
 
+        try:  # caller audio track died = caller talking unheard; say so loudly
+            @transport.event_handler("track-ended")
+            async def _track_ended(transport, track):
+                log.warning("call %s: caller %s track ended — caller unheard from here",
+                            call_id, getattr(track, "kind", "audio"))
+        except Exception:
+            pass  # transport doesn't re-emit track events; audio watchdog covers it
+
         async def _greet_watchdog():
             await asyncio.sleep(3)
             try:
