@@ -245,8 +245,8 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
 
         try:
             await runner.run()
-        except (asyncio.CancelledError, Exception) as e:
-            log.info("call %s pipeline ended: %s", call_id, e)
+        except (asyncio.CancelledError, Exception):
+            log.exception("call %s pipeline ended", call_id)
         watchdog.cancel()
         warm_task.cancel()
         _RUNNING.discard(wa_id)
@@ -259,11 +259,16 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
 def _finish_call(business_id: int, call_id: int, context) -> None:
     """Dump context turns to transcripts, then run the normal post-call chain."""
     try:
-        turns = [(m.get("role", ""), (m.get("content") or "").strip())
-                 for m in context.get_messages()]
+        msgs = context.get_messages()
     except Exception as e:
         log.warning("context dump failed: %s", e)
-        turns = []
+        msgs = []
+    empties = sum(1 for m in msgs
+                  if m.get("role") == "assistant" and not (m.get("content") or "").strip())
+    if empties:
+        log.warning("call %s: %d empty assistant turn(s), thinking likely blew the budget",
+                    call_id, empties)
+    turns = [(m.get("role", ""), (m.get("content") or "").strip()) for m in msgs]
     with db.connect() as conn:
         for role, text in turns:
             if role in ("user", "assistant") and text:
