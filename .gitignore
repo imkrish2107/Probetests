@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.pyc
+*.db
+node_modules/
+dist/
+.DS_Store
+.claude/settings.local.json
+setup/*_api.txt
+backups/
+.next/
+.netlify/
+*.log

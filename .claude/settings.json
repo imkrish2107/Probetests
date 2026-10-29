@@ -1,0 +1,30 @@
+{
+  "model": "sonnet",
+  "effortLevel": "medium",
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(npm run *)",
+      "Bash(curl http://localhost:*)"
+    ],
+    "deny": [
+      "Read(**/.env)",
+      "Read(setup/*_api.txt)",
+      "Read(**/.venv/**)",
+      "Read(**/node_modules/**)",
+      "Read(**/__pycache__/**)",
+      "Read(**/dist/**)",
+      "Read(**/package-lock.json)",
+      "Read(**/*.db)",
+      "Read(**/*.wav)",
+      "Read(**/*.mp3)",
+      "Read(**/*.ogg)",
+      "Read(**/*.safetensors)",
+      "Read(**/*.bin)"
+    ]
+  }
+}
