@@ -127,10 +127,12 @@ def _refresh_audio_track(transport, connection) -> str:
         fresh = get_track()
         if fresh is None:
             return "no live audio track"
-        if hasattr(transport, "_audio_input_track"):
-            transport._audio_input_track = fresh
-            return "switched to live track"
-        return "transport has no audio slot"
+        # The reader lives two levels down: transport -> client -> track slot.
+        client = getattr(transport, "_client", None)
+        if client is None or not hasattr(client, "_audio_input_track"):
+            return "transport client has no audio slot"
+        client._audio_input_track = fresh
+        return "switched to live track"
     except Exception as e:
         return f"refresh failed: {e}"
 
