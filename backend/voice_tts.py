@@ -58,18 +58,23 @@ class MMSTTSService(TTSService):
         key = (_norm(text), lang)
         if key in _CACHE:
             pcm = _CACHE[key]
+            log.info("tts cache hit: %.1fs audio", len(pcm) / 32000)
             for i in range(0, len(pcm), step):
                 yield TTSAudioRawFrame(pcm[i:i + step], self.sample_rate, 1)
             return
         # Synth + stream one sentence at a time: first audio out after one
         # sentence, not after the whole reply.
+        import time
         full = bytearray()
         for sent in split_sentences(text):
+            t0 = time.monotonic()
             try:
                 pcm = await loop.run_in_executor(None, speak_one, sent, lang)
             except Exception as e:
                 log.warning("tts synth failed (%s): %s", lang, e)
                 return
+            log.info("tts synth: %d chars -> %.1fs audio in %.2fs",
+                     len(sent), len(pcm) / 32000, time.monotonic() - t0)
             full += pcm
             for i in range(0, len(pcm), step):
                 yield TTSAudioRawFrame(pcm[i:i + step], self.sample_rate, 1)

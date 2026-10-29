@@ -6,9 +6,9 @@ sentence-by-sentence synthesis, 16kHz out. Voices: CC-BY-NC, demo-only.
 import os
 import re
 
-# MMS ships one fixed voice per language (male-sounding for en); shift the pitch
-# up to feminize. Tune by ear: VOICE_PITCH_SEMITONES=0 is the raw voice.
-PITCH_SEMITONES = float(os.getenv("VOICE_PITCH_SEMITONES", "3"))
+# MMS ships one fixed voice per language; pitch shift is off by default (raw
+# Meta voice). Tune by ear: VOICE_PITCH_SEMITONES=3 pushes en toward female.
+PITCH_SEMITONES = float(os.getenv("VOICE_PITCH_SEMITONES", "0"))
 
 # MMS model per Transcribe/template language
 VOICES = {"en": "facebook/mms-tts-eng", "eng": "facebook/mms-tts-eng",
