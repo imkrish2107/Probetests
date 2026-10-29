@@ -42,6 +42,12 @@ async def lifespan(app: FastAPI):
         voice_call.set_session(app.state.wa_session)
     except ImportError:
         app.state.wa_session = None
+    try:  # warm the English TTS voice so the first call answers fast
+        import mms_tts
+        await asyncio.get_running_loop().run_in_executor(
+            None, mms_tts.get_voice, "en")
+    except Exception as e:
+        log.warning("tts preload failed: %s", e)
     yield
     task.cancel()
     if getattr(app.state, "wa_session", None):
