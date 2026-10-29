@@ -123,12 +123,7 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
     )
     from pipecat.processors.frame_processor import FrameProcessor
     from pipecat.frames.frames import LLMTextFrame, TranscriptionFrame
-    from pipecat.frames.frames import (
-        BotStartedSpeakingFrame,
-        BotStoppedSpeakingFrame,
-        TTSAudioRawFrame,
-        UserStartedSpeakingFrame,
-    )
+    from pipecat.frames.frames import UserStartedSpeakingFrame
     from pipecat.services.openai.llm import OpenAILLMService
     from pipecat.transports.base_transport import TransportParams
     from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
@@ -182,10 +177,12 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
             webrtc_connection=connection,
             params=TransportParams(audio_in_enabled=True, audio_out_enabled=True))
 
-        # Last-heard clock for the 10s silence rule: any caller or bot frame
-        # resets it, so we only hang up on true dead air, never mid-reply.
-        voice_state = {"last_heard": time.monotonic(), "bot_speaking": False,
-                       "goodbye": False}
+        # Last-heard clock for the 10s silence rule. Caller speech is stamped
+        # in the STT service (transcripts get buffered in the user aggregator
+        # and never reach this timer); bot audio is stamped in the TTS service
+        # (it sits downstream of this timer). Both reset the clock, so we only
+        # hang up on true dead air, never mid-reply.
+        voice_state = {"last_heard": time.monotonic(), "goodbye": False}
 
         class _LLMTimer(FrameProcessor):
             """Log brain time per reply: user-final -> first LLM token."""
@@ -199,16 +196,11 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                 if isinstance(frame, (TranscriptionFrame, UserStartedSpeakingFrame)):
                     self._t0 = time.monotonic()
                     voice_state["last_heard"] = self._t0
+                elif isinstance(frame, LLMRunFrame):
+                    self._t0 = None  # fresh run, fresh clock (stale _t0 lies)
                 elif isinstance(frame, LLMTextFrame) and self._t0 is not None:
                     log.info("llm first token in %.2fs", time.monotonic() - self._t0)
                     self._t0 = None
-                    voice_state["last_heard"] = time.monotonic()
-                elif isinstance(frame, BotStartedSpeakingFrame):
-                    voice_state["bot_speaking"] = True
-                    voice_state["last_heard"] = time.monotonic()
-                elif isinstance(frame, (BotStoppedSpeakingFrame, TTSAudioRawFrame)):
-                    if isinstance(frame, BotStoppedSpeakingFrame):
-                        voice_state["bot_speaking"] = False
                     voice_state["last_heard"] = time.monotonic()
                 await self.push_frame(frame, direction)
 
@@ -270,14 +262,17 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
 
         async def _silence_watchdog():
             # Hang up ONLY after 10s of true dead air: no caller speech, no bot
-            # audio, bot not speaking. Goodbye first, then disconnect.
+            # audio, no reply being generated. Goodbye first, then disconnect —
+            # unless the caller speaks up during the goodbye (then we stay).
             try:
                 while True:
                     await asyncio.sleep(1)
                     if voice_state["goodbye"]:
                         return
-                    quiet = time.monotonic() - voice_state["last_heard"]
-                    if quiet >= 10.0 and not voice_state["bot_speaking"]:
+                    now = time.monotonic()
+                    quiet = now - max(voice_state["last_heard"],
+                                      stt.last_voice_at, tts.last_audio_at)
+                    if quiet >= 10.0:
                         voice_state["goodbye"] = True
                         log.info("call %s: %.0fs silence, saying goodbye", call_id, quiet)
                         try:
@@ -290,6 +285,11 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                             await asyncio.sleep(8)  # let the goodbye play
                         except Exception as e:
                             log.warning("call %s goodbye failed: %s", call_id, e)
+                        if stt.last_voice_at > now:
+                            # Caller spoke during the goodbye: stay on the call.
+                            voice_state["goodbye"] = False
+                            log.info("call %s: caller came back, staying", call_id)
+                            continue
                         for step in ("disconnect", "cancel"):
                             try:
                                 if step == "disconnect":

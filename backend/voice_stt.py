@@ -56,6 +56,7 @@ class MuseSTTService(STTService):
         self._chunks = 0
         self._reconnecting = False
         self._last_reconnect = 0.0
+        self.last_voice_at = time.monotonic()  # read by the silence watchdog
 
     async def setup(self, setup: FrameProcessorSetup):
         await super().setup(setup)
@@ -161,6 +162,8 @@ class MuseSTTService(STTService):
             except ValueError:
                 continue
             text = (payload.get("text") or "").strip()
+            if kind in ("start", "partial", "final", "end"):
+                self.last_voice_at = time.monotonic()  # caller is talking now
             if kind == "session":
                 log.info("stt session: %s", payload.get("id"))
             elif kind == "progress":

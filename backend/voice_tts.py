@@ -6,6 +6,7 @@ event loop never blocks on torch.
 """
 import asyncio
 import logging
+import time
 from collections.abc import AsyncGenerator
 
 from pipecat.frames.frames import Frame, TTSAudioRawFrame
@@ -46,6 +47,7 @@ class MMSTTSService(TTSService):
     def __init__(self, *, lang: str = "hi", sample_rate: int = 16000, **kwargs):
         super().__init__(sample_rate=sample_rate, **kwargs)
         self._lang = lang if lang in LANG_TAG else "hi"
+        self.last_audio_at = 0.0  # last chunk spoken; read by the silence watchdog
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         from mms_tts import speak_one, split_sentences, strip_lang_tag
@@ -60,11 +62,11 @@ class MMSTTSService(TTSService):
             pcm = _CACHE[key]
             log.info("tts cache hit: %.1fs audio", len(pcm) / 32000)
             for i in range(0, len(pcm), step):
+                self.last_audio_at = time.monotonic()
                 yield TTSAudioRawFrame(pcm[i:i + step], self.sample_rate, 1)
             return
         # Synth + stream one sentence at a time: first audio out after one
         # sentence, not after the whole reply.
-        import time
         full = bytearray()
         for sent in split_sentences(text):
             t0 = time.monotonic()
@@ -77,6 +79,7 @@ class MMSTTSService(TTSService):
                      len(sent), len(pcm) / 32000, time.monotonic() - t0)
             full += pcm
             for i in range(0, len(pcm), step):
+                self.last_audio_at = time.monotonic()
                 yield TTSAudioRawFrame(pcm[i:i + step], self.sample_rate, 1)
         if len(_CACHE) >= 20:  # short replies only; bound the RAM
             _CACHE.pop(next(iter(_CACHE)))
