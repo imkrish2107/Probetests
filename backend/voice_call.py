@@ -276,11 +276,21 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                     if stt.last_voice_at > voice_state.get("nudge_at", 0):
                         voice_state["nudged"] = False
                     now = time.monotonic()
+                    if (now - stt.last_audio_chunk_at > 8
+                            and now - voice_state.get("audio_warned_at", 0) > 10):
+                        voice_state["audio_warned_at"] = now
+                        log.warning("call %s: no inbound caller audio for %.0fs —"
+                                    " caller may be talking unheard",
+                                    call_id, now - stt.last_audio_chunk_at)
                     quiet = now - max(voice_state["last_heard"],
                                       stt.last_voice_at, tts.last_audio_at)
                     if quiet < 10.0:
                         continue
-                    if not voice_state.get("nudged"):
+                    if voice_state.get("nudged"):
+                        nudge_at = voice_state.get("nudge_at", 0)
+                        if tts.last_audio_at <= nudge_at and now - nudge_at < 20:
+                            continue  # nudge still generating/speaking; don't pile on
+                    else:
                         voice_state["nudged"] = True
                         voice_state["nudge_at"] = now
                         log.info("call %s: %.0fs silence, nudging", call_id, quiet)

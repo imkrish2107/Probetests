@@ -57,6 +57,7 @@ class MuseSTTService(STTService):
         self._reconnecting = False
         self._last_reconnect = 0.0
         self.last_voice_at = time.monotonic()  # read by the silence watchdog
+        self.last_audio_chunk_at = time.monotonic()  # inbound audio heartbeat
 
     async def setup(self, setup: FrameProcessorSetup):
         await super().setup(setup)
@@ -76,6 +77,7 @@ class MuseSTTService(STTService):
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame | None, None]:
         """Ship caller audio (paced); transcripts arrive via the receive loop."""
+        self.last_audio_chunk_at = time.monotonic()
         if self._ws is None and not self._reconnecting:
             # Socket died mid-call (question two goes nowhere without this).
             if time.monotonic() - self._last_reconnect > 3.0:
