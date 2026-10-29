@@ -85,7 +85,12 @@ class MuseSTTService(STTService):
         log.info("stt connecting: %s", muse_stt.MODEL)
         self._pacer = muse_stt.AudioPacer()
         self._sess = aiohttp.ClientSession()
-        self._ws = await self._sess.ws_connect(muse_stt.WS_URL)
+        try:
+            self._ws = await self._sess.ws_connect(muse_stt.WS_URL)
+        except Exception as e:
+            log.warning("stt socket failed: %s", e)
+            raise
+        log.info("stt socket open")
         await self._ws.send_json(muse_stt.build_auth_frame(
             self._api_key, self._languages, self._keywords))
         self._rx_task = self.create_task(self._rx_loop())
@@ -114,6 +119,7 @@ class MuseSTTService(STTService):
             if msg.type != aiohttp.WSMsgType.TEXT:
                 if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING,
                                 aiohttp.WSMsgType.ERROR):
+                    log.warning("stt socket closed: %s", msg.type)
                     break
                 continue
             try:
@@ -121,14 +127,17 @@ class MuseSTTService(STTService):
             except ValueError:
                 continue
             text = (payload.get("text") or "").strip()
-            if kind == "partial" and text:
+            if kind == "session":
+                log.info("stt session: %s", payload.get("id"))
+            elif kind == "partial" and text:
                 await self.push_frame(InterimTranscriptionFrame(
                     text, self._user_id, _now(), None, result={"text": text}))
             elif kind == "final" and text:
+                log.info("stt final: %.80s", text)
                 await self.push_frame(TranscriptionFrame(
                     text, self._user_id, _now(), None, result={"text": text}))
             elif kind == "unknown":
-                log.debug("stt unknown frame: %.120s", msg.data)
+                log.info("stt unknown frame: %.200s", msg.data)
 
 
 def selfcheck() -> None:
