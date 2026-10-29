@@ -22,7 +22,7 @@ if not log.handlers:  # uvicorn hides stdlib INFO by default; show our call line
     log.addHandler(_h)
 
 _clients: dict = {}
-_RUNNING: set = {}  # wa_call.id -> True; Meta retries connect webhooks
+_RUNNING: set = set()  # wa_call.id -> True; Meta retries connect webhooks
 _session = None  # shared aiohttp session, set from lifespan
 
 FIRST_LANG = {"English": "en", "Hindi": "hi", "Tamil": "ta", "Telugu": "te",
