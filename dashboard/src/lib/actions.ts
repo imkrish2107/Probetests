@@ -38,6 +38,7 @@ export async function signup(form: FormData) {
         name: form.get("name"),
         email: form.get("email"),
         password: form.get("password"),
+        signup_code: form.get("signup_code"),
       }),
     });
     cookies().set("session", data.token, COOKIE);

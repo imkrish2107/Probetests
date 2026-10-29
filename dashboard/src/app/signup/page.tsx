@@ -31,6 +31,10 @@ export default function SignupPage() {
             Password (8+ characters)
             <input className="input" name="password" type="password" minLength={8} required />
           </label>
+          <label>
+            Signup code
+            <input className="input" name="signup_code" required />
+          </label>
           {error && <p className="error">{error}</p>}
           <button className="btn" type="submit">
             Sign up

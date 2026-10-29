@@ -35,8 +35,17 @@ async def lifespan(app: FastAPI):
                 log.warning("scheduler tick failed: %s", e)
 
     task = asyncio.create_task(loop())
+    try:  # shared HTTP session for the voice client; voice stays off without it
+        import aiohttp
+        import voice_call
+        app.state.wa_session = aiohttp.ClientSession()
+        voice_call.set_session(app.state.wa_session)
+    except ImportError:
+        app.state.wa_session = None
     yield
     task.cancel()
+    if getattr(app.state, "wa_session", None):
+        await app.state.wa_session.close()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -127,6 +136,34 @@ def verify(
     return Response(content="forbidden", status_code=403)
 
 
+async def _maybe_voice_call(event: dict, raw: bytes, sig: str) -> bool:
+    """Hand calls-field entries to the voice pipeline. False = not handled."""
+    handled = False
+    for entry in event.get("entry", []):
+        for change in entry.get("changes", []):
+            if change.get("field") != "calls":
+                continue
+            value = change.get("value") or {}
+            pnid = (value.get("metadata") or {}).get("phone_number_id", "")
+            with db.connect() as conn:
+                row = conn.execute("SELECT * FROM businesses WHERE wa_phone_number_id = ?",
+                                   (pnid,)).fetchone()
+            if not row:
+                log.info("webhook: unknown phone_number_id %s, ignored", pnid)
+                continue
+            try:
+                import voice_call
+            except ImportError as e:
+                log.warning("voice unavailable: %s", e)
+                return False
+            try:
+                if await voice_call.handle_calls_entry(dict(row), entry, raw, sig):
+                    handled = True
+            except Exception as e:
+                log.warning("voice call failed: %s", e)
+    return handled
+
+
 @app.post("/webhook")
 async def receive(request: Request):
     raw = await request.body()
@@ -138,6 +175,7 @@ async def receive(request: Request):
     except ValueError:
         log.info("webhook non-JSON event: %.200s", raw.decode("utf-8", "replace"))
         return Response(content="ok")
+    voice_done = await _maybe_voice_call(event, raw, sig)
     for pnid, kind, item in iter_value_items(event):
         with db.connect() as conn:
             biz = conn.execute("SELECT id FROM businesses WHERE wa_phone_number_id = ?",
@@ -151,8 +189,8 @@ async def receive(request: Request):
             elif kind == "message":
                 _handle_inbound(biz["id"], item)
             else:
-                # call connect/terminate: bot launch lands at step 3
-                log.info("webhook call event: %s", json.dumps(item)[:300])
+                if kind != "call" or not voice_done:
+                    log.info("webhook call event: %s", json.dumps(item)[:300])
         except Exception as e:
             log.warning("webhook handler failed: %s", e)
     return Response(content="ok")  # 200 at once; work happens in background
@@ -617,7 +655,10 @@ async def patch_task(task_id: int, request: Request):
     u, err = need_login(request)
     if err:
         return err
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        return api_error("invalid", "bad json", 422)
     if body.get("status") != "done":
         return api_error("invalid", "send {status: 'done', note}", 422)
     with db.connect() as conn:
@@ -706,7 +747,10 @@ async def patch_contact(contact_id: int, request: Request):
     u, err = need_login(request)
     if err:
         return err
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        return api_error("invalid", "bad json", 422)
     allowed = {"name", "stage", "tags", "notes"}
     updates = {k: body[k] for k in allowed if k in body}
     if "stage" in updates and updates["stage"] not in ("new", "lead", "booked", "customer"):
@@ -744,7 +788,8 @@ async def call_button(contact_id: int, request: Request):
         return err
     with db.connect() as conn:
         row = conn.execute(
-            "SELECT id FROM contacts WHERE id = ? AND business_id = ?", (contact_id, u["business_id"])
+            "SELECT id, last_inbound_at FROM contacts WHERE id = ? AND business_id = ?",
+            (contact_id, u["business_id"]),
         ).fetchone()
     if not row:
         return api_error("not_found", "no contact", 404)
@@ -752,9 +797,20 @@ async def call_button(contact_id: int, request: Request):
         body = await request.json()
     except Exception:
         body = {}
+    import datetime as dt
+    kind, template = "template", "call_us"  # outside the 24h window: template
+    if row["last_inbound_at"]:
+        try:
+            last = dt.datetime.fromisoformat(row["last_inbound_at"])
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=dt.timezone.utc)
+            if (dt.datetime.now(dt.timezone.utc) - last).total_seconds() < 24 * 3600:
+                kind, template = "interactive", ""  # inside window: voice_call button
+        except ValueError:
+            pass
     mid = stub_send("call_button", u["business_id"], contact_id,
-                    body=body.get("message", ""), template="call_us")
-    return {"message_id": mid, "kind": "template"}
+                    body=body.get("message", ""), template=template)
+    return {"message_id": mid, "kind": kind}
 
 
 @app.post("/api/contacts/{contact_id}/callback", status_code=202)
@@ -863,7 +919,10 @@ async def create_user(request: Request):
         return err
     if u["role"] != "owner":
         return api_error("forbidden", "owner only", 403)
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        return api_error("invalid", "bad json", 422)
     name, email, password = (body.get("name") or "").strip(), \
         (body.get("email") or "").strip().lower(), body.get("password") or ""
     if not name or not email or len(password) < 8:
