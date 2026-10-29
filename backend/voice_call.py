@@ -194,7 +194,12 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
 
         pipeline = Pipeline([transport.input(), stt, user_agg, llm, _LLMTimer(),
                              tts, transport.output(), asst_agg])
-        worker = PipelineWorker(pipeline)
+        worker = PipelineWorker(
+            pipeline,
+            # Dead air must never hang up on a caller; calls end on hangup/crash.
+            cancel_on_idle_timeout=False,
+            cancel_runner_on_idle_timeout=False,
+        )
         runner = PipelineRunner()
         await runner.add_workers(worker)
 
