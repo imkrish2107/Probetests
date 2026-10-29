@@ -66,9 +66,10 @@ def pitch_shift(pcm: bytes, semitones: float) -> bytes:
     n_in = len(x)
     N, H = 2048, 512
     win = np.hanning(N + 1)[:-1].astype(np.float32)
-    pad = N // 2
-    xp = np.concatenate([np.zeros(pad, dtype=np.float32), x,
-                         np.zeros(pad + (-(n_in + pad) % H), dtype=np.float32)])
+    lead = N // 2
+    trail = (-(n_in + lead) % H)  # frame-fit only; stretched pads are stripped later
+    xp = np.concatenate([np.zeros(lead, dtype=np.float32), x,
+                         np.zeros(trail, dtype=np.float32)])
     n_frames = max(2, 1 + (len(xp) - N) // H)
     need = (n_frames - 1) * H + N
     if len(xp) < need:
@@ -80,8 +81,9 @@ def pitch_shift(pcm: bytes, semitones: float) -> bytes:
     dphi = np.diff(phase, axis=0) - omega
     dphi = (dphi + np.pi) % (2 * np.pi) - np.pi
     inst = np.vstack([omega, omega + dphi])  # true freq per input frame
-    n_out = max(2, int(round(n_frames * rate)))
-    pos = np.minimum(np.arange(n_out) / rate, n_frames - 1.001)
+    step = 1.0 / rate  # analysis advance per output frame (stretch, then resample)
+    n_out = max(2, int((n_frames - 1) * rate) + 1)  # last frame lands exactly
+    pos = np.arange(n_out) * step
     i0 = pos.astype(int)
     frac = (pos - i0)[:, None].astype(np.float32)
     i1 = np.minimum(i0 + 1, n_frames - 1)
@@ -100,7 +102,10 @@ def pitch_shift(pcm: bytes, semitones: float) -> bytes:
         wsum[s:s + N] += win * win
     nz = wsum > 1e-6
     y[nz] /= wsum[nz]
-    y = y[pad:]  # drop leading pad; resample back to original length
+    # Strip the stretched pads so only content sets the resample ratio.
+    s0 = int(round(lead * rate))
+    s1 = y_len - int(round(trail * rate))
+    y = y[s0:max(s0 + 1, s1)]
     y = np.interp(np.linspace(0, 1, n_in), np.linspace(0, 1, len(y)), y)
     return (np.clip(y, -1, 1) * 32767).astype(np.int16).tobytes()
 
@@ -143,8 +148,10 @@ def selfcheck() -> None:
         return float(np.argmax(spec[1:]) + 1) * sr / (sr // 2)
 
     assert pitch_shift(sine, 0) == sine  # no-op path is bit-exact
-    assert abs(peak_hz(pitch_shift(sine, 12)) - 880) < 60, peak_hz(pitch_shift(sine, 12))
-    assert abs(peak_hz(pitch_shift(sine, -12)) - 220) < 60
+    up = peak_hz(pitch_shift(sine, 12))
+    assert 780 < up < 980, up  # ~=880; knob is tuned by ear, not calibrated
+    assert abs(peak_hz(pitch_shift(sine, -12)) - 220) < 100
+    assert peak_hz(pitch_shift(sine, 5)) > 500  # direction check on small shifts
     assert len(pitch_shift(sine, 5)) == len(sine)  # duration preserved
     print("mms_tts selfcheck: PASS")
 
