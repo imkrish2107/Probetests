@@ -130,6 +130,8 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
             api_key=key, base_url="https://api.meta.ai/v1",
             settings=OpenAILLMService.Settings(
                 model=os.getenv("LLM_MODEL", "muse-spark-1.3"),
+                # Spark spends tokens "thinking": leave room so content survives.
+                max_completion_tokens=400,
                 system_instruction=agent.build_prompt(biz)))
         tts = MMSTTSService(lang=first)
         context = LLMContext()
