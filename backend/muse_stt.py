@@ -26,6 +26,8 @@ def parse_event(msg: dict) -> tuple[str, dict]:
     if "sessionId" in msg:
         return "session", {"id": msg["sessionId"]}
     kind = msg.get("type", "")
+    if kind == "audioProgress":
+        return "progress", {"ms": msg.get("audioProcessedMs")}
     if kind == "speechStart":
         return "start", {"turnId": msg.get("turnId")}
     if kind == "speechEnd":

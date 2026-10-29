@@ -48,6 +48,9 @@ class MuseSTTService(STTService):
         self._ws = None
         self._rx_task = None
         self._pacer = muse_stt.AudioPacer()
+        self._sent_bytes = 0
+        self._peak = 0
+        self._chunks = 0
 
     async def setup(self, setup: FrameProcessorSetup):
         await super().setup(setup)
@@ -72,6 +75,18 @@ class MuseSTTService(STTService):
                 ok = self._pacer.allow(len(audio))
                 if ok:
                     await self._ws.send_bytes(audio[:ok])
+                    self._sent_bytes += ok
+                    import audioop
+                    try:
+                        peak = audioop.max(audio[:ok], 2)
+                    except Exception:
+                        peak = -1
+                    if peak > self._peak:
+                        self._peak = peak
+                    self._chunks += 1
+                    if self._chunks % 250 == 0:  # ~5s of 20ms chunks
+                        log.info("stt audio in: %d bytes, peak %d (0 = dead air)",
+                                 self._sent_bytes, self._peak)
             except Exception as e:
                 log.warning("stt send failed, dropping socket: %s", e)
                 self._ws = None
@@ -129,7 +144,10 @@ class MuseSTTService(STTService):
             text = (payload.get("text") or "").strip()
             if kind == "session":
                 log.info("stt session: %s", payload.get("id"))
+            elif kind == "progress":
+                pass  # audioProgress heartbeat; run_stt already reports volume
             elif kind == "partial" and text:
+                log.info("stt partial: %.80s", text)
                 await self.push_frame(InterimTranscriptionFrame(
                     text, self._user_id, _now(), None, result={"text": text}))
             elif kind == "final" and text:
