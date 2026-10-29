@@ -26,6 +26,8 @@ def reply(prompt: str, model: str | None = None, max_tokens: int = 120) -> dict:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
+            # Spark over-thinks; cap it so short replies survive the budget.
+            "reasoning_effort": "minimal",
         },
         timeout=30,
     )
