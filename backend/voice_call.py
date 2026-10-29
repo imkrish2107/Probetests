@@ -93,7 +93,7 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
     from pipecat.frames.frames import LLMRunFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
-    from pipecat.pipeline.task import PipelineTask
+    from pipecat.pipeline.worker import PipelineWorker
     from pipecat.processors.aggregators.llm_context import LLMContext
     from pipecat.processors.aggregators.llm_response_universal import (
         LLMContextAggregatorPair,
@@ -142,8 +142,9 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
             params=TransportParams(audio_in_enabled=True, audio_out_enabled=True))
         pipeline = Pipeline([transport.input(), stt, user_agg, llm, tts,
                              transport.output(), asst_agg])
-        task = PipelineTask(pipeline)
+        worker = PipelineWorker(pipeline)
         runner = PipelineRunner()
+        await runner.add_workers(worker)
 
         greeted = {"via": None}
 
@@ -153,7 +154,7 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
             if greeted["via"] is None:
                 greeted["via"] = via
                 context.add_message({"role": "developer", "content": "Greet the caller."})
-                await task.queue_frames([LLMRunFrame()])
+                await worker.queue_frames([LLMRunFrame()])
                 log.info("call %s greeting via %s", call_id, via)
 
         @transport.event_handler("on_client_connected")
@@ -166,7 +167,7 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
         @transport.event_handler("on_client_disconnected")
         async def _gone(transport, client):
             try:
-                await runner.cancel_task(task)
+                await runner.cancel()
             except Exception:
                 pass
 
@@ -180,7 +181,7 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
         watchdog = asyncio.create_task(_greet_watchdog())
 
         try:
-            await runner.run_task(task)
+            await runner.run()
         except (asyncio.CancelledError, Exception) as e:
             log.info("call %s pipeline ended: %s", call_id, e)
         watchdog.cancel()
