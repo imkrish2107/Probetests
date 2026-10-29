@@ -110,34 +110,35 @@ def _voice_contact(business_id: int, wa_user_id: str, phone: str = "") -> int:
 
 
 def _refresh_audio_track(transport, connection) -> str:
-    """Re-point the transport at the live audio track after a mid-call swap.
+    """Re-point the reader at a live caller-audio receiver after a swap.
 
-    Meta renegotiates the caller audio track mid-call; Pipecat's reader keeps
-    the stale wrapper forever (Timeout every 2s, caller unheard). Dropping the
-    connection's cached wrapper makes the next read wrap the live receiver.
-    All private access is guarded: worst case the refresh is a no-op.
+    Meta can move caller audio to a different receiver mid-call; Pipecat's
+    reader keeps its connect-time wrapper forever (Timeout every 2s, caller
+    unheard). So scan every transceiver for a live audio track and attach
+    the reader to the first one. All private access is guarded: worst case
+    the refresh is a no-op.
     """
     try:
-        get_track = getattr(connection, "audio_input_track", None)
-        if get_track is None:
-            return "no audio_input_track on connection"
-        track_map = getattr(connection, "_track_map", None)
-        if isinstance(track_map, dict):
-            track_map.clear()
-        fresh = get_track()
-        if fresh is None:
-            return "no live audio track"
-        # The reader lives two levels down: transport -> client -> track slot.
+        states = []
+        live = []
+        pc = getattr(connection, "pc", None)
+        transceivers = pc.getTransceivers() if pc is not None else []
+        for tr in transceivers:
+            recv = getattr(tr, "receiver", None)
+            track = getattr(recv, "track", None)
+            kind = getattr(track, "kind", "?")
+            state = getattr(track, "readyState", "?")
+            states.append(f"{kind}:{state}")
+            if kind == "audio" and state == "live":
+                live.append(recv)
+        if not live:
+            return "no live audio track (saw {})".format(",".join(states) or "none")
+        from pipecat.transports.smallwebrtc.connection import SmallWebRTCTrack
         client = getattr(transport, "_client", None)
         if client is None or not hasattr(client, "_audio_input_track"):
             return "transport client has no audio slot"
-        client._audio_input_track = fresh
-        inner = getattr(fresh, "_track", None)
-        detail = "{}/{}/{}".format(
-            getattr(inner, "kind", "?"),
-            str(getattr(inner, "id", "?"))[:8],
-            getattr(inner, "readyState", "?"))
-        return f"switched to live track ({detail})"
+        client._audio_input_track = SmallWebRTCTrack(live[0])
+        return "switched to live track [{}]".format(",".join(states))
     except Exception as e:
         return f"refresh failed: {e}"
 
@@ -335,7 +336,12 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                                       stt.last_voice_at, tts.last_audio_at)
                     if quiet < 10.0:
                         continue
-                    if voice_state.get("nudged"):
+                    pipe_dead = (now - stt.last_audio_chunk_at > 8)
+                    if pipe_dead:
+                        if now - stt.last_audio_chunk_at < 30:
+                            continue  # deaf, recovery running: never nudge the unheard
+                        # else fall through: admit it honestly and hang up
+                    elif voice_state.get("nudged"):
                         nudge_at = voice_state.get("nudge_at", 0)
                         if tts.last_audio_at <= nudge_at and now - nudge_at < 20:
                             continue  # nudge still generating/speaking; don't pile on
@@ -355,13 +361,16 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                             log.warning("call %s nudge failed: %s", call_id, e)
                         continue
                     voice_state["goodbye"] = True
+                    if pipe_dead:
+                        gb_text = ("You cannot hear the caller due to a connection problem. Say one"
+                                   " short sentence apologizing that you can't hear them and asking them"
+                                   " to hang up and call back, in the call language and nothing else.")
+                    else:
+                        gb_text = ("The caller has gone quiet. Say one short goodbye"
+                                   " sentence in the call language and nothing else.")
                     log.info("call %s: %.0fs silence, saying goodbye", call_id, quiet)
                     try:
-                        context.add_message({
-                            "role": "user",
-                            "content": "The caller has gone quiet. Say one short goodbye"
-                                       " sentence in the call language and nothing else.",
-                        })
+                        context.add_message({"role": "user", "content": gb_text})
                         await worker.queue_frames([LLMRunFrame()])
                         await asyncio.sleep(8)  # let the goodbye play
                     except Exception as e:
