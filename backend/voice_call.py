@@ -217,8 +217,11 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                 log.warning("call %s greet watchdog failed: %s", call_id, e)
 
         watchdog = asyncio.create_task(_greet_watchdog())
-        warm_task = asyncio.create_task(asyncio.get_running_loop().run_in_executor(
-            None, _warm_greeting, greet_text, first))  # greeting audio ready early
+
+        async def _warm():
+            await asyncio.get_running_loop().run_in_executor(
+                None, _warm_greeting, greet_text, first)  # greeting audio ready early
+        warm_task = asyncio.create_task(_warm())
 
         try:
             await runner.run()
