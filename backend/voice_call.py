@@ -39,12 +39,19 @@ _SCRIPT_TAGS = [
 ]
 
 
+_FILLERS = frozenset(
+    "ok okay yes yeah no hello hi hmm thanks thank you sorry haan han ji "
+    "accha theek sari aama illa seri".split())
+
+
 def detect_lang(text: str, allowed: list[str]) -> str | None:
-    """Caller's language from script share: 3+ words, 70%+ letters one
-    script, and in the business's languages. Else None, so "ok", "haan",
-    names and numbers never switch the call."""
-    words = (text or "").split()
-    if len(words) < 3:
+    """Caller's language from script share: 4+ non-filler words, 70%+
+    letters one script, and in the business's languages. Else None, so
+    "ok", "haan", names and numbers never switch the call."""
+    words = ["".join(ch for ch in w.lower() if ch.isalpha())
+             for w in (text or "").split()]
+    content = [w for w in words if w and w not in _FILLERS]
+    if len(content) < 4:
         return None
     hits: dict[tuple, int] = {}
     letters = 0
@@ -323,7 +330,6 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                                  call_id, call_lang["tag"], tag, frame.text)
                         call_lang["tag"] = tag
                         tts.set_lang(tag)
-                elif isinstance(frame, UserStoppedSpeakingFrame):
                     context.add_message({
                         "role": "system",
                         "content": f"[reply in: {TAG_LANG.get(call_lang['tag'], call_lang['tag'])}]",
@@ -539,6 +545,9 @@ def selfcheck() -> None:
     assert detect_lang("நான் ஒரு டேபிள் புக் பண்ணணும்", ["en", "ta"]) == "ta"
     assert detect_lang("मुझे कल शाम को टेबल चाहिए", ["en", "hi"]) == "hi"
     assert detect_lang("நான் ஒரு டேபிள் புக் பண்ணணும்", ["en", "hi"]) is None
+    assert detect_lang("yes yes okay", ["en", "ta"]) is None
+    assert detect_lang("okay thank you so much", ["en", "ta"]) is None
+    assert detect_lang("I want to book a table for four", ["en", "ta"]) == "en"
     print("voice_call selfcheck: PASS")
 
 

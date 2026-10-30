@@ -297,6 +297,7 @@ def selfcheck() -> None:
     r = reschedule_booking(ctx, free[2])
     assert r["status"] == "changed" and r["id"] == b["id"], r
     assert cancel_booking(ctx, "change of plans")["status"] == "cancelled"
+    assert cancel_booking(ctx)["status"] == "cancelled"  # two bookings exist; earliest cancels first
     assert cancel_booking(ctx)["error"] == "no_booking"  # nothing left
     t = create_task(ctx, "complaint", "cold food", "normal")
     assert t["urgency"] == "urgent", t  # forced

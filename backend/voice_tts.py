@@ -1,16 +1,21 @@
 """Meta MMS voices as a Pipecat TTS service (one per call, fixed language).
 
-Replies carry a [lang] tag (see agent.build_prompt); the tag picks the voice when
-present, else the call's default language. Synthesis runs in a worker thread so the
-event loop never blocks on torch.
+The voice follows the call's language (set by code); the LLM's tag is only
+checked, never obeyed. Synthesis runs in a worker thread so the event loop
+never blocks on torch.
 """
+from __future__ import annotations  # keep annotations lazy: pipecat may be absent for selfcheck
 import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
 
-from pipecat.frames.frames import Frame, TTSAudioRawFrame
-from pipecat.services.tts_service import TTSService
+try:
+    from pipecat.frames.frames import Frame, TTSAudioRawFrame
+    from pipecat.services.tts_service import TTSService
+    _HAS_PIPECAT = True
+except ImportError:  # bare interpreter: only the offline parts of selfcheck run
+    _HAS_PIPECAT = False
 
 log = logging.getLogger("voice_tts")
 log.setLevel(logging.INFO)
@@ -45,7 +50,7 @@ def warm(text: str, lang: str) -> None:
         _CACHE[key] = speak(bare, tag if tag in LANG_TAG else lang)
 
 
-class MMSTTSService(TTSService):
+class MMSTTSService(TTSService if _HAS_PIPECAT else object):  # else: selfcheck-only shell
     def __init__(self, *, lang: str = "hi", sample_rate: int = 16000, **kwargs):
         super().__init__(sample_rate=sample_rate, **kwargs)
         self._lang = lang if lang in LANG_TAG else "hi"
@@ -103,6 +108,9 @@ def selfcheck() -> None:
     assert _norm("[hi] मसाला डोसा") != _norm("[hi] नमस्ते")  # native script survives the key
     assert _norm("[hi] काल आऊंगा") != _norm("[hi] कल आऊंगा")  # vowel-signs count too
     assert _norm("[ta] வணக்கம்") != _norm("[ta] நன்றி")
+    if not _HAS_PIPECAT:
+        print("voice_tts selfcheck: PASS (service asserts skipped: no pipecat)")
+        return
     svc = MMSTTSService(lang="en")
     assert svc._lang == "en"
     svc.set_lang("ta")
