@@ -50,25 +50,20 @@ class MMSTTSService(TTSService):
         super().__init__(sample_rate=sample_rate, **kwargs)
         self._lang = lang if lang in LANG_TAG else "hi"
         self.last_audio_at = 0.0  # last chunk spoken; read by the silence watchdog
-        self._reply_lang: dict = {}  # context_id -> tag: Pipecat speaks sentence by sentence
-        self._last_tag = ""  # untagged replies stay in the last heard language
 
-    def _resolve_lang(self, tag: str, context_id: str) -> str:
-        """One tag leads each reply; later sentences arrive bare but same context."""
+    def set_lang(self, tag: str) -> None:
+        """Code owns the voice: the caller's language, not the LLM's tag."""
         if tag in LANG_TAG:
-            self._reply_lang[context_id] = tag
-            if len(self._reply_lang) > 20:
-                self._reply_lang.pop(next(iter(self._reply_lang)))
-            self._last_tag = tag
-            return tag
-        return self._reply_lang.get(context_id) or self._last_tag or self._lang
+            self._lang = tag
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         from mms_tts import speak_one, split_sentences, strip_lang_tag
         tag, bare = strip_lang_tag(text)
         if not bare.strip():
             return
-        lang = self._resolve_lang(tag, context_id)
+        if tag and tag != self._lang:
+            log.warning("tts tag [%s] != call lang %s, using call lang", tag, self._lang)
+        lang = self._lang
         loop = asyncio.get_running_loop()
         step = int(self.sample_rate * 2 * 1.0)  # 1s chunks: fewer boundary gaps
         key = (_norm(text), lang)
@@ -109,9 +104,11 @@ def selfcheck() -> None:
     assert _norm("[hi] काल आऊंगा") != _norm("[hi] कल आऊंगा")  # vowel-signs count too
     assert _norm("[ta] வணக்கம்") != _norm("[ta] நன்றி")
     svc = MMSTTSService(lang="en")
-    assert svc._resolve_lang("ta", "c1") == "ta"
-    assert svc._resolve_lang("", "c1") == "ta"  # later sentence, same reply
-    assert svc._resolve_lang("", "c2") == "ta"  # untagged reply stays sticky
+    assert svc._lang == "en"
+    svc.set_lang("ta")
+    assert svc._lang == "ta"
+    svc.set_lang("xx")
+    assert svc._lang == "ta"  # bogus tags never switch the voice
     print("voice_tts selfcheck: PASS")
 
 

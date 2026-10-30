@@ -28,6 +28,48 @@ _session = None  # shared aiohttp session, set from lifespan
 
 FIRST_LANG = {"English": "en", "Hindi": "hi", "Tamil": "ta", "Telugu": "te",
               "Kannada": "kn", "Bengali": "bn", "Marathi": "mr"}
+TAG_LANG = {v: k for k, v in FIRST_LANG.items()}
+
+_SCRIPT_TAGS = [
+    ((0x0900, 0x097F), ("hi", "mr")),  # Devanagari
+    ((0x0980, 0x09FF), ("bn",)),       # Bengali
+    ((0x0B80, 0x0BFF), ("ta",)),       # Tamil
+    ((0x0C00, 0x0C7F), ("te",)),       # Telugu
+    ((0x0C80, 0x0CFF), ("kn",)),       # Kannada
+]
+
+
+def detect_lang(text: str, allowed: list[str]) -> str | None:
+    """Caller's language from script share: 3+ words, 70%+ letters one
+    script, and in the business's languages. Else None, so "ok", "haan",
+    names and numbers never switch the call."""
+    words = (text or "").split()
+    if len(words) < 3:
+        return None
+    hits: dict[tuple, int] = {}
+    letters = 0
+    for ch in text:
+        if not ch.isalpha():
+            continue
+        letters += 1
+        o = ord(ch)
+        if 0x41 <= o <= 0x5A or 0x61 <= o <= 0x7A or 0x00C0 <= o <= 0x024F:
+            key = ("en",)
+        else:
+            key = None
+            for (lo, hi), tags in _SCRIPT_TAGS:
+                if lo <= o <= hi:
+                    key = tags
+                    break
+        if key is not None:
+            hits[key] = hits.get(key, 0) + 1
+    if not letters:
+        return None
+    top = max(hits, key=hits.get, default=None)
+    if top is None or hits[top] / letters < 0.7:
+        return None
+    ok = set(allowed)
+    return next((t for t in top if t in ok), None)
 
 
 def set_session(sess) -> None:
@@ -200,6 +242,8 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
         biz = agent._biz(business["id"])
         langs = biz.get("languages") or ["English"]
         first = FIRST_LANG.get(langs[0], "hi")
+        call_lang = {"tag": first}  # code owns it; only caller speech switches it
+        allowed = [t for t in (FIRST_LANG.get(l, "") for l in langs) if t]
         cid = _voice_contact(business["id"], caller or f"call-{wa_call.id}")
         with db.connect() as conn:
             cur = conn.execute(
@@ -265,8 +309,29 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                     voice_state["last_heard"] = time.monotonic()
                 await self.push_frame(frame, direction)
 
-        pipeline = Pipeline([transport.input(), stt, user_agg, llm, _LLMTimer(),
-                             tts, transport.output(), asst_agg])
+        class _LangNote(FrameProcessor):
+            """Code owns the call language: detect it from caller script, and
+            hand it to the LLM on every turn. The system prompt stays frozen;
+            the turn carries the language."""
+
+            async def process_frame(self, frame, direction):
+                await super().process_frame(frame, direction)
+                if isinstance(frame, TranscriptionFrame):
+                    tag = detect_lang(frame.text, allowed)
+                    if tag and tag != call_lang["tag"]:
+                        log.info("call %s lang %s -> %s (caller said: %.60s)",
+                                 call_id, call_lang["tag"], tag, frame.text)
+                        call_lang["tag"] = tag
+                        tts.set_lang(tag)
+                elif isinstance(frame, UserStoppedSpeakingFrame):
+                    context.add_message({
+                        "role": "system",
+                        "content": f"[reply in: {TAG_LANG.get(call_lang['tag'], call_lang['tag'])}]",
+                    })
+                await self.push_frame(frame, direction)
+
+        pipeline = Pipeline([transport.input(), stt, _LangNote(), user_agg, llm,
+                             _LLMTimer(), tts, transport.output(), asst_agg])
         worker = PipelineWorker(
             pipeline,
             # Dead air must never hang up on a caller; calls end on hangup/crash.
@@ -286,6 +351,10 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                 # Meta rejects a run with no user/tool message, so the greet
                 # trigger rides on a caller "Hello"; the opening line itself is
                 # fixed (custom greeting or the Meera default), pre-synthed.
+                context.add_message({
+                    "role": "system",
+                    "content": f"[reply in: {TAG_LANG.get(call_lang['tag'], call_lang['tag'])}]",
+                })
                 context.add_message({
                     "role": "user",
                     "content": f"Hello. Open with exactly this line and nothing else: {greet_text}",
@@ -374,24 +443,26 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                         voice_state["nudge_at"] = now
                         log.info("call %s: %.0fs silence, nudging", call_id, quiet)
                         try:
+                            lang_name = TAG_LANG.get(call_lang["tag"], call_lang["tag"])
                             context.add_message({
                                 "role": "user",
                                 "content": "The caller has gone quiet. Say one very short"
-                                           " check-in like 'Are you still there?' in the call"
-                                           " language and nothing else.",
+                                           f" check-in like 'Are you still there?' in {lang_name}"
+                                           " and nothing else.",
                             })
                             await worker.queue_frames([LLMRunFrame()])
                         except Exception as e:
                             log.warning("call %s nudge failed: %s", call_id, e)
                         continue
                     voice_state["goodbye"] = True
+                    lang_name = TAG_LANG.get(call_lang["tag"], call_lang["tag"])
                     if pipe_dead:
                         gb_text = ("You cannot hear the caller due to a connection problem. Say one"
                                    " short sentence apologizing that you can't hear them and asking them"
-                                   " to hang up and call back, in the call language and nothing else.")
+                                   f" to hang up and call back, in {lang_name} and nothing else.")
                     else:
                         gb_text = ("The caller has gone quiet. Say one short goodbye"
-                                   " sentence in the call language and nothing else.")
+                                   f" sentence in {lang_name} and nothing else.")
                     log.info("call %s: %.0fs silence, saying goodbye", call_id, quiet)
                     try:
                         context.add_message({"role": "user", "content": gb_text})
@@ -458,3 +529,22 @@ def _finish_call(business_id: int, call_id: int, context) -> None:
         automation.post_call(call_id)
     except Exception as e:
         log.warning("post_call failed: %s", e)
+
+
+def selfcheck() -> None:
+    """Offline: caller-driven language detection (no network, no keys)."""
+    assert detect_lang("ok", ["en", "hi"]) is None
+    assert detect_lang("haan", ["en", "hi"]) is None
+    assert detect_lang("I want to book a table for four", ["en", "hi"]) == "en"
+    assert detect_lang("நான் ஒரு டேபிள் புக் பண்ணணும்", ["en", "ta"]) == "ta"
+    assert detect_lang("मुझे कल शाम को टेबल चाहिए", ["en", "hi"]) == "hi"
+    assert detect_lang("நான் ஒரு டேபிள் புக் பண்ணணும்", ["en", "hi"]) is None
+    print("voice_call selfcheck: PASS")
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "selfcheck":
+        selfcheck()
+    else:
+        print("usage: python voice_call.py selfcheck")
