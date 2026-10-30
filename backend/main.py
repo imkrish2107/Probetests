@@ -42,10 +42,24 @@ async def lifespan(app: FastAPI):
         voice_call.set_session(app.state.wa_session)
     except ImportError:
         app.state.wa_session = None
-    try:  # warm the English TTS voice so the first call answers fast
+    try:  # warm every MMS voice any business may need, so replies never wait on load
         import mms_tts
-        await asyncio.get_running_loop().run_in_executor(
-            None, mms_tts.get_voice, "en")
+        import voice_call
+        tags = set()
+        with db.connect() as conn:
+            rows = conn.execute("SELECT languages FROM businesses").fetchall()
+        for r in rows:
+            try:
+                langs = json.loads(r["languages"]) if isinstance(r["languages"], str) else r["languages"]
+            except ValueError:
+                langs = ["English"]
+            for l in langs or ["English"]:
+                t = voice_call.FIRST_LANG.get(l, "")
+                if t and t in mms_tts.VOICES:
+                    tags.add(t)
+        loop = asyncio.get_running_loop()
+        for t in sorted(tags):
+            await loop.run_in_executor(None, mms_tts.get_voice, t)
     except Exception as e:
         log.warning("tts preload failed: %s", e)
     try:  # pre-synth greetings so calls open instantly, no first-line stutter

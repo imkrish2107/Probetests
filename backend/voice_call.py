@@ -232,8 +232,17 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
         LLMUserAggregatorParams,
     )
     from pipecat.processors.frame_processor import FrameProcessor
-    from pipecat.frames.frames import LLMTextFrame, TranscriptionFrame
+    from pipecat.frames.frames import LLMTextFrame, TranscriptionFrame, TTSAudioRawFrame
     from pipecat.frames.frames import UserStartedSpeakingFrame, UserStoppedSpeakingFrame
+    try:
+        from pipecat.frames.frames import ProposedUserStoppedSpeakingFrame
+        _STOP_TYPES = (UserStoppedSpeakingFrame, ProposedUserStoppedSpeakingFrame)
+    except ImportError:
+        _STOP_TYPES = (UserStoppedSpeakingFrame,)
+    try:
+        from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
+    except ImportError:  # pre-1.15: fall back to Silero turn-taking below
+        ExternalUserTurnStrategies = None
     from pipecat.services.openai.llm import OpenAILLMService
     from pipecat.transports.base_transport import TransportParams
     from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
@@ -280,8 +289,18 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                 system_instruction=agent.build_prompt(biz)))
         tts = MMSTTSService(lang=first)
         context = LLMContext()
-        user_agg, asst_agg = LLMContextAggregatorPair(
-            context, user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()))
+        if ExternalUserTurnStrategies is not None:
+            # Meta's endpointing ends the turn (its stop strategy waits for
+            # the final transcript); Silero VAD stays on as the backstop.
+            log.info("call %s: turn end = Meta endpointing", call_id)
+            user_params = LLMUserAggregatorParams(
+                vad_analyzer=SileroVADAnalyzer(),
+                user_turn_strategies=ExternalUserTurnStrategies())
+        else:
+            log.warning("call %s: no external turn strategies, keeping Silero turn-taking",
+                        call_id)
+            user_params = LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer())
+        user_agg, asst_agg = LLMContextAggregatorPair(context, user_params=user_params)
         transport = SmallWebRTCTransport(
             webrtc_connection=connection,
             params=TransportParams(audio_in_enabled=True, audio_out_enabled=True))
@@ -294,26 +313,34 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
         voice_state = {"last_heard": time.monotonic(), "goodbye": False}
 
         class _LLMTimer(FrameProcessor):
-            """Log brain time per reply: user-final -> first LLM token."""
+            """One line per caller reply: speech end -> llm first token -> first audio."""
 
             def __init__(self):
                 super().__init__()
-                self._t0 = None
+                self._stop = False  # a caller turn ended; next token/audio get measured
+                self._x = None  # speech end -> first token, filled once per reply
 
             async def process_frame(self, frame, direction):
                 await super().process_frame(frame, direction)
-                if isinstance(frame, (TranscriptionFrame, UserStartedSpeakingFrame)):
+                if isinstance(frame, _STOP_TYPES):
+                    self._stop = True
+                    self._x = None
                     voice_state["last_heard"] = time.monotonic()
-                elif isinstance(frame, UserStoppedSpeakingFrame):
-                    # Caller finished: this is the honest start of brain time.
-                    self._t0 = time.monotonic()
-                    voice_state["last_heard"] = self._t0
+                elif isinstance(frame, (TranscriptionFrame, UserStartedSpeakingFrame)):
+                    self._x = None  # new caller speech voids any pending measurement
+                    voice_state["last_heard"] = time.monotonic()
                 elif isinstance(frame, LLMRunFrame):
-                    self._t0 = None  # fresh run, fresh clock (stale _t0 lies)
-                elif isinstance(frame, LLMTextFrame) and self._t0 is not None:
-                    log.info("llm first token in %.2fs", time.monotonic() - self._t0)
-                    self._t0 = None
+                    self._stop = False  # manual run (greet/nudge/goodbye): not a reply
+                    self._x = None
+                elif isinstance(frame, LLMTextFrame):
                     voice_state["last_heard"] = time.monotonic()
+                    if self._stop and self._x is None and stt.last_end_at > 0:
+                        self._x = time.monotonic() - stt.last_end_at
+                        log.info("turn: speech end -> llm first token %.2fs", self._x)
+                elif isinstance(frame, TTSAudioRawFrame) and self._stop and self._x is not None:
+                    self._stop = False
+                    log.info("turn: speech end -> llm first token %.2fs -> first audio %.2fs",
+                             self._x, time.monotonic() - stt.last_end_at)
                 await self.push_frame(frame, direction)
 
         class _LangNote(FrameProcessor):

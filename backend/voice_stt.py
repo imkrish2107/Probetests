@@ -20,6 +20,13 @@ from pipecat.frames.frames import (
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )
+try:
+    from pipecat.frames.frames import (
+        ProposedUserStartedSpeakingFrame as _ProposedStart,
+        ProposedUserStoppedSpeakingFrame as _ProposedStop,
+    )
+except ImportError:  # turn strategies pre-1.15: proposals are plain turn frames
+    _ProposedStart, _ProposedStop = UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
 from pipecat.services.stt_service import STTService
 
@@ -58,6 +65,7 @@ class MuseSTTService(STTService):
         self._last_reconnect = 0.0
         self.last_voice_at = time.monotonic()  # read by the silence watchdog
         self.last_audio_chunk_at = time.monotonic()  # inbound audio heartbeat
+        self.last_end_at = 0.0  # Meta speechEnd stamp; read by the turn timer
         self._pending = bytearray()  # caller audio held across socket blips
         self._max_pending = 10 * 32000  # ~10s; older than that is dropped
         self.last_rx_at = time.monotonic()  # last frame FROM Meta
@@ -216,14 +224,16 @@ class MuseSTTService(STTService):
                 await self.push_frame(TranscriptionFrame(
                     text, self._user_id, _now(), None, result={"text": text}))
             elif kind == "start":
-                # Meta says the caller started talking: tell the pipeline so the
-                # user aggregator opens a turn (and the bot can barge in).
+                # Meta says the caller started talking: propose a turn so the
+                # user aggregator opens it (and the bot can barge in).
                 log.info("stt speech start (turn %s)", payload.get("turnId"))
-                await self.push_frame(UserStartedSpeakingFrame())
+                await self.push_frame(_ProposedStart())
             elif kind == "end":
-                # Meta found the end of the turn: close it so the LLM fires.
+                # Meta found the end of the turn: propose the stop; the turn
+                # strategy waits for the final transcript before closing it.
+                self.last_end_at = time.monotonic()
                 log.info("stt speech end (turn %s)", payload.get("turnId"))
-                await self.push_frame(UserStoppedSpeakingFrame())
+                await self.push_frame(_ProposedStop())
             elif kind == "unknown":
                 log.info("stt unknown frame: %.200s", msg.data)
 
