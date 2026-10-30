@@ -26,10 +26,12 @@ _CACHE: dict = {}  # (normalized text, lang) -> PCM; greetings replay instantly
 
 
 def _norm(text: str) -> str:
-    import re
+    import unicodedata
     from mms_tts import strip_lang_tag
     _, bare = strip_lang_tag(text)
-    return re.sub(r"[^a-z0-9]", "", bare.lower())
+    # Letters, numbers and vowel-signs in every script: Hindi/Tamil replies
+    # key apart (plain \w drops matras, merging काल and कल into one key).
+    return "".join(ch for ch in bare.lower() if unicodedata.category(ch)[0] in "LNM")
 
 
 def warm(text: str, lang: str) -> None:
@@ -48,13 +50,25 @@ class MMSTTSService(TTSService):
         super().__init__(sample_rate=sample_rate, **kwargs)
         self._lang = lang if lang in LANG_TAG else "hi"
         self.last_audio_at = 0.0  # last chunk spoken; read by the silence watchdog
+        self._reply_lang: dict = {}  # context_id -> tag: Pipecat speaks sentence by sentence
+        self._last_tag = ""  # untagged replies stay in the last heard language
+
+    def _resolve_lang(self, tag: str, context_id: str) -> str:
+        """One tag leads each reply; later sentences arrive bare but same context."""
+        if tag in LANG_TAG:
+            self._reply_lang[context_id] = tag
+            if len(self._reply_lang) > 20:
+                self._reply_lang.pop(next(iter(self._reply_lang)))
+            self._last_tag = tag
+            return tag
+        return self._reply_lang.get(context_id) or self._last_tag or self._lang
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         from mms_tts import speak_one, split_sentences, strip_lang_tag
         tag, bare = strip_lang_tag(text)
         if not bare.strip():
             return
-        lang = tag if tag in LANG_TAG else self._lang
+        lang = self._resolve_lang(tag, context_id)
         loop = asyncio.get_running_loop()
         step = int(self.sample_rate * 2 * 1.0)  # 1s chunks: fewer boundary gaps
         key = (_norm(text), lang)
@@ -91,6 +105,13 @@ def selfcheck() -> None:
     import subprocess
     r = subprocess.run(["python3", "mms_tts.py", "selfcheck"], capture_output=True, text=True)
     assert "PASS" in r.stdout, r.stdout + r.stderr
+    assert _norm("[hi] मसाला डोसा") != _norm("[hi] नमस्ते")  # native script survives the key
+    assert _norm("[hi] काल आऊंगा") != _norm("[hi] कल आऊंगा")  # vowel-signs count too
+    assert _norm("[ta] வணக்கம்") != _norm("[ta] நன்றி")
+    svc = MMSTTSService(lang="en")
+    assert svc._resolve_lang("ta", "c1") == "ta"
+    assert svc._resolve_lang("", "c1") == "ta"  # later sentence, same reply
+    assert svc._resolve_lang("", "c2") == "ta"  # untagged reply stays sticky
     print("voice_tts selfcheck: PASS")
 
 

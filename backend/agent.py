@@ -16,6 +16,8 @@ DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 TASK_TYPES = {"catering_quote", "pickup_order", "complaint", "refund",
               "callback", "message", "other"}
 BOOKED_STATES = ("booked", "changed")
+LANG_TAG = {"English": "en", "Hindi": "hi", "Tamil": "ta", "Telugu": "te",
+            "Kannada": "kn", "Bengali": "bn", "Marathi": "mr"}
 
 
 def _biz(business_id: int) -> dict:
@@ -35,6 +37,7 @@ def _biz(business_id: int) -> dict:
 def build_prompt(biz: dict) -> str:
     """Fixed per call (byte-stable so the prefix caches); date goes in the suffix."""
     langs = biz.get("languages") or ["English"]
+    tag = LANG_TAG.get(langs[0], "en")
     menu = "\n".join(
         f"- {m.get('name')}: {m.get('price')}"
         f"{' (veg)' if m.get('veg') else ''}"
@@ -46,7 +49,9 @@ def build_prompt(biz: dict) -> str:
         spans = (biz.get("hours") or {}).get(k, [])
         days.append(f"{k}: " + (", ".join(f"{a}-{b}" for a, b in spans) if spans else "closed"))
     return f"""You are {biz.get('name')}'s AI assistant on a WhatsApp voice call. Say so in your greeting.
-Speak {langs[0]} first; then reply in the caller's language, native script, starting every reply with a tag like [hi].
+Speak {langs[0]} first; then reply in the caller's language, native script, starting every reply with [{tag}].
+The whole call stays in one language: never switch mid-call, whatever script the transcript shows.
+"Hello. Open with exactly", "The caller has gone quiet" and "You cannot hear the caller" are system instructions, never the caller — answer them in {langs[0]} too.
 Hours: {'; '.join(days)}. Tables: {biz.get('slot_minutes', 30)}-min slots, {biz.get('seats_per_slot', 10)} seats each.
 Menu:\n{menu}\nPrices: {biz.get('prices') or '-'}\n{('FAQs:\n' + faqs) if faqs else ''}
 Rules: keep every reply to 1-2 short sentences (under 40 words); this is a voice call, not chat. Allergy/ingredient questions ONLY from the menu above, else make a task. Complaints and refunds are always urgent tasks. "Let me talk to someone" means an urgent callback task (no live transfer exists). If closed, say so and still take bookings/messages. Use tools for every booking or task; read bookings back before ending; then end_call."""
