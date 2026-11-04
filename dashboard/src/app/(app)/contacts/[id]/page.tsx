@@ -68,21 +68,21 @@ export default async function ContactPage({
       </div>
       <div className="card">
         <h2>Calls</h2>
-        {c.calls.map((call: any) => (
+        {(c.calls ?? []).map((call: any) => (
           <p key={call.id}>
             <a href={`/calls/${call.id}`}>#{call.id}</a> {call.started_at} · {call.outcome}
           </p>
         ))}
-        {c.calls.length === 0 && <p>No calls.</p>}
+        {(c.calls ?? []).length === 0 && <p>No calls.</p>}
       </div>
       <div className="card">
         <h2>Bookings & tasks</h2>
-        {c.bookings.map((b: any) => (
+        {(c.bookings ?? []).map((b: any) => (
           <p key={b.id}>
             Booking: {b.slot} · {b.party_size} · {b.status}
           </p>
         ))}
-        {c.tasks.map((t: any) => (
+        {(c.tasks ?? []).map((t: any) => (
           <p key={t.id}>
             Task: {t.type} — {t.details} ({t.status})
           </p>
