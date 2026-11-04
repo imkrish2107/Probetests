@@ -188,6 +188,14 @@ async def _maybe_voice_call(event: dict, raw: bytes, sig: str) -> bool:
             items = [c for c in (value.get("calls") or []) if isinstance(c, dict)]
             if not items:
                 continue
+            import call_out
+            if all(call_out.is_outbound(i) for i in items):
+                # Our own outbound test/call: stash SDP answers, score the
+                # terminate event into the unanswered streak. Never raises.
+                for i in items:
+                    call_out.handle_outbound_item(i, log)
+                handled = True
+                continue
             try:
                 import voice_call
             except ImportError as e:
