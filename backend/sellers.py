@@ -474,14 +474,18 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
                    (li["delivery"] or "our delivery address"))]
         if isinstance(body, dict) and body.get("preview"):
             return {"preview": stock_check_text(*params)}
+        import httpx
+        import outbound
         try:
             return send_stock_check(u["business_id"], s["id"], listing_id)
-        except ValueError as e:
+        except (ValueError, outbound.GraphError) as e:
             out = {"sent": "none", "note": str(e)}
             if "approval" in str(e).lower():
                 out["ask_from_whatsapp"] = wa_me_link(
                     s["phone"], stock_check_text(*params))
             return out
+        except httpx.HTTPError:
+            return {"sent": "none", "note": "WhatsApp send failed, try again"}
 
     @app.get("/api/listings/{listing_id}/invite")
     async def invite(listing_id: int, request: Request):

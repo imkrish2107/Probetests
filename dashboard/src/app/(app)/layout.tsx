@@ -15,7 +15,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <>
       <nav className="topbar">
-        <a href="/hunts">Agent dashboard</a>
+        <a href="/hunts">Hunts</a>
         <a href="/orders">Orders</a>
         <a href="/sellers">Vendors</a>
         <a href="/setup">Setup</a>

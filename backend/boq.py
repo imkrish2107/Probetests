@@ -21,7 +21,7 @@ WHOLE_BUILDING = {
     "Cement": ("bag", 0.45, 0.35, 0.50),
     "TMT steel": ("kg", 4.0, 3.5, 5.0),
     "Sand": ("cft", 1.4, 1.2, 1.6),
-    "Aggregate": ("cft", 1.0, 1.0, 2.0),
+    "Aggregate": ("cft", 1.5, 1.0, 2.0),
     "Bricks": ("piece", 9, 8, 10),
 }
 
@@ -271,6 +271,8 @@ def selfcheck() -> None:
         # by hand: cement 500*0.45*1.075=241.875; steel 500*4*1.075=2150
         assert abs(got["Cement"] - 241.875) < 0.01, got
         assert got["TMT steel"] == 2150.0, got
+        assert got["Aggregate"] == 500 * 1.5 * 1.075, got
+        assert WHOLE_BUILDING["Aggregate"] == ("cft", 1.5, 1.0, 2.0)
         assert got["Bricks"] == 500 * 9 * 1.075, got
         # tiles (168+35)*1.1=223.3; paint (52+24)*10-2*21-3*12=682
         assert got["Floor tiles"] == 223.3, got

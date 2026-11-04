@@ -27,7 +27,7 @@ export default function DropForm({ flow }: { flow: "shopping" | "construction" }
       }}
       style={{
         border: "3px dashed",
-        borderColor: drag ? "green" : "grey",
+        borderColor: drag ? "var(--oxblood)" : "var(--ink)",
         padding: "2em",
         textAlign: "center",
       }}

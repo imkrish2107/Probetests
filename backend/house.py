@@ -8,6 +8,8 @@ import hashlib
 import json
 import os
 
+import httpx
+
 import db
 
 LABEL = "Concept image. Not to scale, and the real building will differ."
@@ -196,6 +198,9 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
         except (ValueError, RuntimeError) as e:
             # Plain failure, retry allowed; never a stock image instead.
             return api_error("failed", f"image failed: {e}; try again", 502)
+        except httpx.HTTPError:
+            # Network or timeout reaching the image model, not our bug.
+            return api_error("failed", "image failed, try again", 502)
         return JSONResponse(out)
 
     @app.get("/api/hunts/{hunt_id}/image")

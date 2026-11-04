@@ -1,16 +1,20 @@
 import { get, Expired } from "@/lib/ui";
 import DropForm from "./dropform";
+import Refresh from "./[id]/refresh";
 
 export const dynamic = "force-dynamic";
 
-const AGENTS = [
+const SHOPPING_AGENTS = [
   "Spotter", "Finder", "Checker", "Matcher", "Ranker", "Messenger",
-  "Picker", "Buyer", "Tracker", "Plan Reader", "Quantity Surveyor",
-  "House Artist", "Quote Caller",
+  "Picker", "Buyer", "Tracker",
+];
+const CONSTRUCTION_AGENTS = [
+  "Plan Reader", "Quantity Surveyor", "House Artist", "Quote Caller",
 ];
 
-// Hunts: start a hunt (product photo or house plan), the latest hunt's agent
-// panel with real state from hunt_steps, then past hunts.
+// Hunts: start a hunt (product photo or house plan), the agent panel with
+// real state from the latest hunt's hunt_steps (all "ready" when empty,
+// only that flow's agents), then past hunts.
 export default async function HuntsPage({
   searchParams,
 }: {
@@ -27,10 +31,13 @@ export default async function HuntsPage({
     const d = await get(`/api/hunts/${items[0].id}`);
     if (!d.expired && d.data) panel = d.data;
   }
+  const panelConstruction = panel ? panel.hunt.flow === "construction" : construction;
+  const agents = panelConstruction ? CONSTRUCTION_AGENTS : SHOPPING_AGENTS;
   const byAgent: Record<string, any> = {};
   for (const s of panel?.steps ?? []) byAgent[s.agent] = s;
   return (
     <main>
+      <Refresh active={panel?.hunt.status === "running"} />
       <div className="card">
         <h1>{construction ? "Plan a house" : "Find a product"}</h1>
         <p>
@@ -40,31 +47,35 @@ export default async function HuntsPage({
         {error && <p className="pill bad">{error}</p>}
         <DropForm flow={construction ? "construction" : "shopping"} />
       </div>
-      {panel && (
-        <div className="card">
-          <h2>
-            Agents — latest hunt{" "}
-            <a href={`/hunts/${panel.hunt.id}`}>#{panel.hunt.id}</a>{" "}
-            <span className="pill">{panel.hunt.status}</span>
-          </h2>
-          <ul className="steps">
-            {AGENTS.map((a) => {
-              const s = byAgent[a];
-              return (
-                <li key={a}>
-                  <strong>{a}</strong>{" "}
-                  <span
-                    className={`pill ${s?.state === "done" ? "ok" : s?.state === "failed" ? "bad" : ""}`}
-                  >
-                    {s?.state ?? "waiting"}
-                  </span>{" "}
-                  {s?.detail ?? ""} <span className="muted">{s?.at ?? ""}</span>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
+      <div className="card">
+        <h2>
+          Agents{panel ? (
+            <>
+              {" "}— latest hunt{" "}
+              <a href={`/hunts/${panel.hunt.id}`}>#{panel.hunt.id}</a>{" "}
+              <span className="pill">{panel.hunt.status}</span>
+            </>
+          ) : (
+            <> — {panelConstruction ? "house flow" : "shopping flow"}</>
+          )}
+        </h2>
+        <ul className="steps">
+          {agents.map((a) => {
+            const s = byAgent[a];
+            return (
+              <li key={a}>
+                <strong>{a}</strong>{" "}
+                <span
+                  className={`pill ${s?.state === "done" ? "ok" : s?.state === "failed" ? "bad" : ""}`}
+                >
+                  {s?.state ?? "ready"}
+                </span>{" "}
+                {s?.detail ?? ""} <span className="muted">{s?.at ?? ""}</span>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
       <div className="card">
         <h2>Past hunts</h2>
         {items.length === 0 && <p>No hunts yet.</p>}

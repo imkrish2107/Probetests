@@ -22,6 +22,35 @@ HUNT = {
     "rooms": [],
 }
 
+CHUNT = {
+    "hunt": {"id": 2, "flow": "construction", "status": "approved",
+             "searches_used": 0, "cost_usd": 0.02, "spot": '{"floors": 1}',
+             "top_reason": ""},
+    "steps": [{"agent": a, "state": "done", "detail": "smoke", "at": "now"}
+              for a in ("Plan Reader", "Quantity Surveyor", "House Artist",
+                        "Quote Caller")],
+    "listings": [],
+    "rooms": [{"id": 1, "name": "Living", "quantity": 0, "unit": "ft",
+               "status": "room", "spec": '{"length": 14, "width": 12}'},
+              {"id": 2, "name": "Cement", "quantity": 241.88, "unit": "bag",
+               "status": "boq",
+               "spec": '{"range": "200-280 bags", "basis": "0.45 per sqft"}'},
+              {"id": 3, "name": "TMT steel", "quantity": 2150.0, "unit": "kg",
+               "status": "boq",
+               "spec": '{"range": "1900-2400 kg", "basis": "4.0 per sqft"}'}],
+}
+
+CVENDORS = {"items": [{"item": "Cement", "quantity": 241.88, "unit": "bag",
+                       "priced": 1, "blocked": 0,
+                       "best_reason": "Best and cheapest: Same Vendor.",
+                       "listings": [{"id": 7, "url": "https://example.com/c",
+                                     "seller": "Same Vendor", "city": "Jaipur",
+                                     "price": 385.0, "unit": "bag",
+                                     "delivery": "2 days", "in_stock": "yes",
+                                     "verified": 1, "is_best": 1,
+                                     "is_cheapest": 1,
+                                     "seller_opted_in": 1}]}]}
+
 PURCHASE = {"id": 1, "item": "Red shirt", "seller_name": "Demo", "price": 100.0,
             "unit": "pc", "status": "seller_confirmed", "delivery_option": "2 days",
             "delivery_reason": "cheapest", "courier": "", "tracking_number": "",
@@ -48,22 +77,40 @@ class H(BaseHTTPRequestHandler):
                                         "role": "owner"},
                                "business": {"id": 1, "name": "B", "slug": "b"}})
         if p == "/api/hunts":
-            return self._send({"items": [{"id": 1, "flow": "shopping",
+            return self._send({"items": [{"id": 2, "flow": "construction",
+                                           "status": "approved",
+                                           "searches_used": 0, "cost_usd": 0.02,
+                                           "top_reason": ""},
+                                          {"id": 1, "flow": "shopping",
                                            "status": "done", "searches_used": 2,
                                            "cost_usd": 0.01,
                                            "top_reason": "Best verified price"}]})
         if p == "/api/hunts/1":
             return self._send(HUNT)
-        if p == "/api/hunts/1/photo":
+        if p == "/api/hunts/2":
+            return self._send(CHUNT)
+        if p == "/api/hunts/3":
+            return self._send({
+                "hunt": {"id": 3, "flow": "construction", "status": "failed",
+                         "searches_used": 0, "cost_usd": 0.0, "spot": "{}",
+                         "error": "Plan unreadable: upload a clearer plan."},
+                "steps": [{"agent": "Plan Reader", "state": "failed",
+                           "detail": "plan unreadable", "at": "now"}],
+                "listings": [], "rooms": []})
+        if p in ("/api/hunts/1/photo", "/api/hunts/2/photo",
+                   "/api/hunts/1/image", "/api/hunts/2/image"):
             return self._send(b"\xff\xd8fakejpeg", ctype="image/jpeg")
-        if p == "/api/hunts/1/image":
-            return self._send(b"\xff\xd8fakejpeg", ctype="image/jpeg")
-        if p == "/api/hunts/1/boq.csv":
+        if p in ("/api/hunts/1/boq.csv", "/api/hunts/2/boq.csv"):
             return self._send(b"item,qty\nCement,10\n", ctype="text/csv")
-        if p == "/api/hunts/1/vendors":
+        if p in ("/api/hunts/1/vendors", "/api/hunts/3/vendors"):
             return self._send({"items": []})
-        if p == "/api/hunts/1/approval":
+        if p == "/api/hunts/2/vendors":
+            return self._send(CVENDORS)
+        if p in ("/api/hunts/1/approval", "/api/hunts/3/approval"):
             return self._send({"approved": False, "reason": "Build the BOQ first."})
+        if p == "/api/hunts/2/approval":
+            return self._send({"approved": True, "approved_at": "now", "reason": "",
+                               "label": "Concept image."})
         if p == "/api/listings/1/delivery-pick":
             return self._send({"options": [{"label": "2 days", "price": 100.0,
                                             "days": 2}],

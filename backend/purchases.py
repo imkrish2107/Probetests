@@ -448,6 +448,8 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
             body = await request.json()
         except Exception:
             return api_error("invalid", "bad json", 422)
+        import httpx
+        import outbound
         try:
             return JSONResponse(create_purchase(
                 u["business_id"], u["id"], body.get("listing_id"),
@@ -456,6 +458,8 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
                 str(body.get("payment") or "")[:20]), status_code=201)
         except ValueError as e:
             return api_error("rejected", str(e), 409)
+        except (outbound.GraphError, httpx.HTTPError):
+            return api_error("failed", "order send failed, try again", 502)
 
     @app.get("/api/listings/{listing_id}/delivery-pick")
     async def pick(listing_id: int, request: Request):

@@ -231,6 +231,13 @@ function Construction({
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img className="plan" src={`/hunts/${hunt.id}/photo`} alt="floor plan" />
         {awaiting && <p>Reading the plan… this page refreshes every 3 seconds.</p>}
+        {hunt.status === "failed" && roomRows.length === 0 && (
+          <>
+            <p className="pill bad">{hunt.error || "Plan unreadable"}</p>
+            <p>Enter the rooms by hand — same boxes as the plan check.</p>
+            <ManualRooms huntId={hunt.id} />
+          </>
+        )}
         {roomRows.length > 0 && (
           <form action={async (fd) => { "use server"; await confirmRooms(fd); }}>
             <input type="hidden" name="id" value={hunt.id} />
@@ -477,6 +484,46 @@ function Construction({
   );
 }
 
+// Hand-entered rooms when the plan was unreadable: same confirm-rooms
+// action, blank rows instead of Reader rows.
+function ManualRooms({ huntId }: { huntId: number }) {
+  const rows = [0, 1, 2];
+  return (
+    <form action={async (fd) => { "use server"; await confirmRooms(fd); }}>
+      <input type="hidden" name="id" value={huntId} />
+      <input type="hidden" name="count" value={rows.length} />
+      <table className="ledger">
+        <thead>
+          <tr>
+            <th>Room</th>
+            <th>Length</th>
+            <th>Width</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((i) => (
+            <tr key={i}>
+              <td>
+                <input className="input" name={`name-${i}`} maxLength={80} />
+                <input type="hidden" name={`unit-${i}`} value="ft" />
+              </td>
+              <td>
+                <input className="input" name={`length-${i}`} type="number" step="any" />
+              </td>
+              <td>
+                <input className="input" name={`width-${i}`} type="number" step="any" />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <button className="btn" type="submit">
+        Save rooms
+      </button>
+    </form>
+  );
+}
+
 function Compare({ hunt, vendors }: { hunt: any; vendors: any }) {
   if (!vendors?.items?.length) return null;
   const quoted = vendors.items.filter((g: any) =>
@@ -503,13 +550,33 @@ function Compare({ hunt, vendors }: { hunt: any; vendors: any }) {
           {vendors.items.map((g: any) => {
             const best = g.listings.find((l: any) => l.is_best);
             const cheap = g.listings.find((l: any) => l.is_cheapest);
+            const same =
+              best && cheap && (best.id === cheap.id || best.url === cheap.url);
             return (
               <tr key={g.item}>
                 <td>
                   {g.item} ({g.quantity} {g.unit})
                 </td>
-                <td>{best ? `${best.seller}: ${best.price} / ${best.unit}` : "—"}</td>
-                <td>{cheap ? `${cheap.seller}: ${cheap.price} / ${cheap.unit}` : "—"}</td>
+                <td>
+                  {best ? (
+                    <>
+                      {best.seller}: {best.price} / {best.unit}{" "}
+                      <span className="pill ok">best</span>
+                      {same && <span className="pill">cheapest</span>}
+                    </>
+                  ) : (
+                    "—"
+                  )}
+                </td>
+                <td>
+                  {same ? (
+                    "—"
+                  ) : cheap ? (
+                    `${cheap.seller}: ${cheap.price} / ${cheap.unit}`
+                  ) : (
+                    "—"
+                  )}
+                </td>
                 <td>
                   {best && (
                     <a href={best.url} target="_blank" rel="noreferrer">

@@ -352,8 +352,10 @@ def confirm_rooms(hunt_id: int, bid: int, rooms: list[dict]) -> dict:
                          (hunt_id, bid)).fetchone()
         if not h:
             raise ValueError("unknown hunt")
-        if h["status"] not in ("awaiting_rooms", "rooms_confirmed"):
+        if h["status"] not in ("awaiting_rooms", "rooms_confirmed", "failed"):
             raise ValueError("rooms are not ready to check yet")
+        # "failed" is the unreadable-plan dead end: hand-entered rooms replace
+        # nothing and reopen the hunt at rooms_confirmed.
         cleaned = []
         for r in rooms:
             name = str(r.get("name") or "").strip()[:80]
@@ -942,8 +944,12 @@ def _run_hunt(hunt_id: int) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE hunts SET status = 'failed', error = ? WHERE id = ?",
                          (str(e)[:500], hunt_id))
+            # Blame the agent that was actually running, not always Ranker.
+            row = conn.execute("SELECT agent FROM hunt_steps WHERE hunt_id = ?"
+                               " AND state = 'running' ORDER BY id DESC LIMIT 1",
+                               (hunt_id,)).fetchone()
             conn.commit()
-        step(hunt_id, "Ranker", "failed", str(e)[:500])
+        step(hunt_id, row["agent"] if row else "Ranker", "failed", str(e)[:500])
 
 
 # ---- routes ----
@@ -1314,6 +1320,13 @@ def selfcheck() -> None:
         with db.connect() as conn:
             h2 = conn.execute("SELECT status, error FROM hunts WHERE id = 2").fetchone()
             assert h2["status"] == "failed" and "unreadable" in h2["error"], dict(h2)
+        # Dead end reopened: hand-entered rooms on the failed hunt work.
+        r2 = confirm_rooms(2, 1, [{"name": "Living", "length": 14, "width": 12,
+                                   "unit": "ft"}])
+        assert r2 == {"rooms": 1}, r2
+        with db.connect() as conn:
+            assert conn.execute("SELECT status FROM hunts WHERE id = 2"
+                                ).fetchone()["status"] == "rooms_confirmed"
     finally:
         globals()["chat_structured"] = real_chat
         db.DB_PATH = old
