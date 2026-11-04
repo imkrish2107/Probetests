@@ -8,16 +8,17 @@ export const dynamic = "force-dynamic";
 export default async function SetupPage({
   searchParams,
 }: {
-  searchParams: Promise<{ saved?: string }>;
+  searchParams: Promise<{ saved?: string; error?: string }>;
 }) {
-  const { saved } = await searchParams;
+  const { saved, error } = await searchParams;
   const biz = await api("/api/business", undefined, await sessionToken());
   return (
     <main>
       <div className="card">
         <h1>Setup</h1>
         {saved && <p>Saved.</p>}
-        <form action={async (fd) => { await saveSetup(fd); }}>
+        {error && <p className="pill bad">{error}</p>}
+        <form action={async (fd) => { "use server"; await saveSetup(fd); }}>
           <label>
             Business name
             <input className="input" name="name" defaultValue={biz.name ?? ""} required />

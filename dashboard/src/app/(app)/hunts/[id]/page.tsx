@@ -22,10 +22,10 @@ export default async function HuntPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ preview?: string }>;
+  searchParams: Promise<{ preview?: string; error?: string }>;
 }) {
   const { id } = await params;
-  const { preview } = await searchParams;
+  const { preview, error } = await searchParams;
   const d = await get(`/api/hunts/${id}`);
   if (d.expired || !d.data) return <Expired />;
   const { hunt, steps, listings, rooms } = d.data;
@@ -52,8 +52,9 @@ export default async function HuntPage({
           </span>
         </p>
         {hunt.error && <p className="pill bad">{hunt.error}</p>}
+        {error && <p className="pill bad">{error}</p>}
         {hunt.top_reason && <p>{hunt.top_reason}</p>}
-        <form action={async (fd) => { await deleteHunt(fd); }}>
+        <form action={async (fd) => { "use server"; await deleteHunt(fd); }}>
           <input type="hidden" name="id" value={hunt.id} />
           <button className="btn danger" type="submit">
             Delete hunt
@@ -191,7 +192,7 @@ async function PreviewBox({
       <p>
         <em>{text}</em>
       </p>
-      <form action={async (fd) => { await stockCheck(fd); }}>
+      <form action={async (fd) => { "use server"; await stockCheck(fd); }}>
         <input type="hidden" name="hunt_id" value={huntId} />
         <input type="hidden" name="listing_id" value={listingId} />
         <input type="hidden" name="seller_id" value={l?.seller_id ?? ""} />
@@ -227,7 +228,7 @@ function Construction({
         <img className="plan" src={`/hunts/${hunt.id}/photo`} alt="floor plan" />
         {awaiting && <p>Reading the plan… this page refreshes every 3 seconds.</p>}
         {roomRows.length > 0 && (
-          <form action={async (fd) => { await confirmRooms(fd); }}>
+          <form action={async (fd) => { "use server"; await confirmRooms(fd); }}>
             <input type="hidden" name="id" value={hunt.id} />
             <input type="hidden" name="count" value={roomRows.length} />
             <table className="ledger">
@@ -285,7 +286,7 @@ function Construction({
       <div className="card">
         <h2>2. BOQ</h2>
         {boqRows.length === 0 && (
-          <form action={async (fd) => { await buildBoq(fd); }}>
+          <form action={async (fd) => { "use server"; await buildBoq(fd); }}>
             <input type="hidden" name="id" value={hunt.id} />
             <button className="btn" type="submit" disabled={hunt.status !== "rooms_confirmed"}>
               Build BOQ
@@ -325,7 +326,7 @@ function Construction({
                       <td>{spec.range}</td>
                       <td>{spec.basis}</td>
                       <td>
-                        <form action={async (fd) => { await editBoqQty(fd); }}>
+                        <form action={async (fd) => { "use server"; await editBoqQty(fd); }}>
                           <input type="hidden" name="id" value={hunt.id} />
                           <input type="hidden" name="name" value={r.name} />
                           <input
@@ -356,7 +357,7 @@ function Construction({
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img className="shot" src={`/hunts/${hunt.id}/image?n=1`} alt="concept house" />
         <p className="muted">Concept image. Not to scale, and the real building will differ.</p>
-        <form action={async (fd) => { await genImage(fd); }}>
+        <form action={async (fd) => { "use server"; await genImage(fd); }}>
           <input type="hidden" name="id" value={hunt.id} />
           <label>
             Style note <span className="norm">(optional)</span>
@@ -378,7 +379,7 @@ function Construction({
           <>
             <p>{approval?.data?.reason ?? "Build the BOQ first."}</p>
             {boqRows.length > 0 && (
-              <form action={async (fd) => { await approveHunt(fd); }}>
+              <form action={async (fd) => { "use server"; await approveHunt(fd); }}>
                 <input type="hidden" name="id" value={hunt.id} />
                 <input type="hidden" name="image" value={`${hunt.id}_concept_1.jpg`} />
                 <button className="btn" type="submit">
@@ -393,7 +394,7 @@ function Construction({
       <div className="card">
         <h2>5. Vendors</h2>
         {boqRows.length > 0 && (
-          <form action={async (fd) => { await startVendorSearch(fd); }}>
+          <form action={async (fd) => { "use server"; await startVendorSearch(fd); }}>
             <input type="hidden" name="id" value={hunt.id} />
             {boqRows.map((r: any) => (
               <label key={r.id}>

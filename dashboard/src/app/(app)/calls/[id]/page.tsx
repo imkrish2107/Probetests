@@ -24,7 +24,7 @@ export default async function CallPage({ params }: { params: Promise<{ id: strin
           {Number(call.cost_usd).toFixed(4)}
         </p>
         {call.contact_id && (
-          <form action={async (fd) => { await callButton(fd); }}>
+          <form action={async (fd) => { "use server"; await callButton(fd); }}>
             <input type="hidden" name="contact_id" value={call.contact_id} />
             <button className="btn" type="submit">
               Send call button

@@ -10,10 +10,10 @@ export default async function OrderPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ asked?: string }>;
+  searchParams: Promise<{ asked?: string; error?: string }>;
 }) {
   const { id } = await params;
-  const { asked } = await searchParams;
+  const { asked, error } = await searchParams;
   const d = await get(`/api/purchases/${id}`);
   if (d.expired || !d.data?.id) return <Expired />;
   const p = d.data;
@@ -26,6 +26,7 @@ export default async function OrderPage({
           Order #{p.id} <span className="pill">{p.status}</span>
         </h1>
         {asked && <p>Update asked.</p>}
+        {error && <p className="pill bad">{error}</p>}
         <p>
           {p.item} — {p.price ?? "Quote"} {p.unit} from {p.seller_name}
         </p>
@@ -47,7 +48,7 @@ export default async function OrderPage({
           </p>
         )}
         {chaseable && (
-          <form action={async (fd) => { await askForUpdate(fd); }}>
+          <form action={async (fd) => { "use server"; await askForUpdate(fd); }}>
             <input type="hidden" name="id" value={p.id} />
             <button className="btn" type="submit">
               Ask for update
@@ -56,13 +57,13 @@ export default async function OrderPage({
         )}
         {open && (
           <>
-            <form action={async (fd) => { await markDelivered(fd); }}>
+            <form action={async (fd) => { "use server"; await markDelivered(fd); }}>
               <input type="hidden" name="id" value={p.id} />
               <button className="btn" type="submit">
                 Mark delivered
               </button>
             </form>{" "}
-            <form action={async (fd) => { await cancelPurchase(fd); }}>
+            <form action={async (fd) => { "use server"; await cancelPurchase(fd); }}>
               <input type="hidden" name="id" value={p.id} />
               <button className="btn danger" type="submit">
                 Cancel order

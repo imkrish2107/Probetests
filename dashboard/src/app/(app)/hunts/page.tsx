@@ -22,7 +22,7 @@ export default async function HuntsPage({
           <a href="/hunts?flow=construction">Plan a house</a>
         </p>
         {error && <p className="pill bad">{error}</p>}
-        <form action={async (fd) => { await createHunt(fd); }}>
+        <form action={async (fd) => { "use server"; await createHunt(fd); }}>
           <input type="hidden" name="flow" value={construction ? "construction" : "shopping"} />
           <label>
             {construction ? "Floor plan (photo or PDF, max 8 MB)" : "Shirt photo (max 8 MB)"}

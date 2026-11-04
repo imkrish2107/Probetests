@@ -4,8 +4,15 @@ import { updateContact, callButton, aiCallback } from "@/lib/actions";
 export const dynamic = "force-dynamic";
 
 // Contact detail: editable stage/tags/notes, full history, call buttons.
-export default async function ContactPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ContactPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ error?: string }>;
+}) {
   const { id } = await params;
+  const { error } = await searchParams;
   const { data: c, expired } = await get(`/api/contacts/${id}`);
   if (expired || !c) return <Expired />;
   return (
@@ -14,11 +21,12 @@ export default async function ContactPage({ params }: { params: Promise<{ id: st
         <h1>
           {c.name || "Unknown"} <Lang code={c.language} /> {c.stage}
         </h1>
+        {error && <p className="pill bad">{error}</p>}
         <p>
           {c.phone || "no number"} · {c.calls_count} calls · permission:{" "}
           {c.call_permission ? "yes" : "no"}
         </p>
-        <form action={async (fd) => { await updateContact(fd); }}>
+        <form action={async (fd) => { "use server"; await updateContact(fd); }}>
           <input type="hidden" name="id" value={c.id} />
           <label>
             Name
@@ -43,14 +51,14 @@ export default async function ContactPage({ params }: { params: Promise<{ id: st
           </label>
           <button type="submit">Save</button>
         </form>
-        <form action={async (fd) => { await callButton(fd); }}>
+        <form action={async (fd) => { "use server"; await callButton(fd); }}>
           <input type="hidden" name="contact_id" value={c.id} />
           <button className="btn" type="submit">
             Send call button
           </button>
         </form>
         {c.call_permission ? (
-          <form action={async (fd) => { await aiCallback(fd); }}>
+          <form action={async (fd) => { "use server"; await aiCallback(fd); }}>
             <input type="hidden" name="contact_id" value={c.id} />
             <button type="submit">AI call back</button>
           </form>

@@ -10,7 +10,7 @@ export async function createHunt(form: FormData) {
   const token = await sessionToken();
   const flow = String(form.get("flow") || "shopping");
   const file = form.get("file");
-  if (!(file instanceof File) || file.size === 0) return { error: "attach a photo or plan" };
+  if (!(file instanceof File) || file.size === 0) redirect("/hunts?error=attach%20a%20photo%20or%20plan");
   const out = new FormData();
   out.append(flow === "construction" ? "plan" : "photo", file);
   out.append("flow", flow);
@@ -18,12 +18,14 @@ export async function createHunt(form: FormData) {
     const v = form.get(k);
     if (v !== null && String(v) !== "") out.append(k, String(v));
   }
+  let hid = "";
   try {
     const data = await postForm("/api/hunts", out, token);
-    redirect(`/hunts/${data.id}`);
+    hid = String(data.id);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/hunts?error=${encodeURIComponent(friendly(e))}`);
   }
+  redirect(`/hunts/${hid}`);
 }
 
 export async function deleteHunt(form: FormData) {
@@ -31,7 +33,7 @@ export async function deleteHunt(form: FormData) {
   try {
     await api(`/api/hunts/${form.get("id")}`, { method: "DELETE" }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/hunts?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect("/hunts");
 }
@@ -57,7 +59,7 @@ export async function confirmRooms(form: FormData) {
       body: JSON.stringify({ rooms }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/hunts/${form.get("id")}?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/hunts/${form.get("id")}`);
 }
@@ -67,7 +69,7 @@ export async function buildBoq(form: FormData) {
   try {
     await api(`/api/hunts/${form.get("id")}/boq`, { method: "POST", body: "{}" }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/hunts/${form.get("id")}?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/hunts/${form.get("id")}`);
 }
@@ -80,7 +82,7 @@ export async function editBoqQty(form: FormData) {
       body: JSON.stringify({ name: form.get("name"), quantity: Number(form.get("quantity")) }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/hunts/${form.get("id")}?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/hunts/${form.get("id")}`);
 }
@@ -93,7 +95,7 @@ export async function genImage(form: FormData) {
       body: JSON.stringify({ style: String(form.get("style") || "") }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/hunts/${form.get("id")}?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/hunts/${form.get("id")}`);
 }
@@ -106,7 +108,7 @@ export async function approveHunt(form: FormData) {
       body: JSON.stringify({ image: String(form.get("image") || "") }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/hunts/${form.get("id")}?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/hunts/${form.get("id")}`);
 }
@@ -120,7 +122,7 @@ export async function startVendorSearch(form: FormData) {
       body: JSON.stringify({ item_ids: ids.length ? ids : null }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/hunts/${form.get("id")}?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/hunts/${form.get("id")}`);
 }
@@ -129,7 +131,7 @@ export async function startVendorSearch(form: FormData) {
 
 export async function addSeller(form: FormData) {
   const token = await sessionToken();
-  if (!form.get("agreed")) return { error: "the opt-in checkbox is required" };
+  if (!form.get("agreed")) redirect("/sellers?error=the%20opt-in%20checkbox%20is%20required");
   try {
     await api("/api/sellers", {
       method: "POST",
@@ -141,7 +143,7 @@ export async function addSeller(form: FormData) {
       }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/sellers?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect("/sellers");
 }
@@ -154,7 +156,7 @@ export async function optOutSeller(form: FormData) {
       body: JSON.stringify({ opted_in: false }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/sellers?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect("/sellers");
 }
@@ -173,7 +175,7 @@ export async function stockCheck(form: FormData) {
       }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/hunts/${hid}?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(form.get("send") ? `/hunts/${hid}` : `/hunts/${hid}?preview=${listing}`);
 }
@@ -256,7 +258,7 @@ export async function saveSetup(form: FormData) {
   try {
     await api("/api/business", { method: "PUT", body: JSON.stringify(body) }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/setup?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect("/setup?saved=1");
 }
@@ -271,7 +273,7 @@ export async function bookingMove(form: FormData) {
       body: JSON.stringify({ slot: form.get("slot") }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/bookings?date=${date}&error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/bookings?date=${date}`);
 }
@@ -286,7 +288,7 @@ export async function bookingCancel(form: FormData) {
       body: JSON.stringify({ status: "cancelled" }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/bookings?date=${date}&error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/bookings?date=${date}`);
 }
@@ -300,7 +302,7 @@ export async function taskDone(form: FormData) {
       body: JSON.stringify({ status: "done", note: form.get("note") }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/tasks?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect("/tasks");
 }
@@ -313,7 +315,7 @@ export async function callButton(form: FormData) {
       body: JSON.stringify({}),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/contacts/${form.get("contact_id")}?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/contacts/${form.get("contact_id")}?sent=1`);
 }
@@ -326,7 +328,7 @@ export async function aiCallback(form: FormData) {
       body: JSON.stringify({ purpose: "follow-up" }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/contacts/${form.get("contact_id")}?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/contacts/${form.get("contact_id")}?sent=1`);
 }
@@ -349,7 +351,7 @@ export async function updateContact(form: FormData) {
       }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/contacts/${id}?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/contacts/${id}?saved=1`);
 }
@@ -358,21 +360,25 @@ export async function updateContact(form: FormData) {
 
 export async function createPurchase(form: FormData) {
   const token = await sessionToken();
+  const hid = String(form.get("hunt_id") || "");
+  const listing = String(form.get("listing_id"));
+  let pid = "";
   try {
     const r = await api("/api/purchases", {
       method: "POST",
       body: JSON.stringify({
-        listing_id: Number(form.get("listing_id")),
+        listing_id: Number(listing),
         price: form.get("price") === "" ? null : Number(form.get("price")),
         seller_id: Number(form.get("seller_id") || 0) || null,
         delivery_option: String(form.get("delivery_option") || ""),
         payment: String(form.get("payment") || "cod"),
       }),
     }, token);
-    redirect(`/orders/${r.purchase_id}`);
+    pid = String(r.purchase_id);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/hunts/${hid}/order/${listing}?error=${encodeURIComponent(friendly(e))}`);
   }
+  redirect(`/orders/${pid}`);
 }
 
 export async function cancelPurchase(form: FormData) {
@@ -383,7 +389,7 @@ export async function cancelPurchase(form: FormData) {
       body: JSON.stringify({ status: "cancelled" }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/orders/${form.get("id")}?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/orders/${form.get("id")}`);
 }
@@ -396,7 +402,7 @@ export async function markDelivered(form: FormData) {
       body: JSON.stringify({ status: "delivered" }),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/orders/${form.get("id")}?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/orders/${form.get("id")}`);
 }
@@ -409,7 +415,7 @@ export async function askForUpdate(form: FormData) {
       body: JSON.stringify({}),
     }, token);
   } catch (e) {
-    return { error: friendly(e) };
+    redirect(`/orders/${form.get("id")}?error=${encodeURIComponent(friendly(e))}`);
   }
   redirect(`/orders/${form.get("id")}?asked=1`);
 }

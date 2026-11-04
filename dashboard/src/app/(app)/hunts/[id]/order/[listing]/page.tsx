@@ -9,10 +9,13 @@ export const dynamic = "force-dynamic";
 // only: money never moves through this app.
 export default async function OrderConfirmPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string; listing: string }>;
+  searchParams: Promise<{ error?: string }>;
 }) {
   const { id, listing } = await params;
+  const { error } = await searchParams;
   const h = await get(`/api/hunts/${id}`);
   if (h.expired || !h.data) return <Expired />;
   const l = (h.data.listings ?? []).find((x: any) => String(x.id) === String(listing));
@@ -25,6 +28,7 @@ export default async function OrderConfirmPage({
     <main>
       <div className="card">
         <h1>Place order</h1>
+        {error && <p className="pill bad">{error}</p>}
         <p>Check everything. The seller gets your name, address and phone only when you confirm.</p>
         <table className="ledger">
           <tbody>
@@ -43,8 +47,9 @@ export default async function OrderConfirmPage({
         {pick?.reason && (
           <p className="muted">Picker suggests “{pick.pick?.label}”: {pick.reason}.</p>
         )}
-        <form action={async (fd) => { await createPurchase(fd); }}>
+        <form action={async (fd) => { "use server"; await createPurchase(fd); }}>
           <input type="hidden" name="listing_id" value={l.id} />
+          <input type="hidden" name="hunt_id" value={id} />
           <input type="hidden" name="price" value={l.price ?? ""} />
           <input type="hidden" name="seller_id" value={l.seller_id ?? ""} />
           <label>

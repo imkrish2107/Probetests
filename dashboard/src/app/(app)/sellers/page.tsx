@@ -5,7 +5,12 @@ export const dynamic = "force-dynamic";
 
 // Only sellers the user added with the opt-in checkbox are ever messaged.
 // STOP flips opted_in off immediately; the table shows the real state.
-export default async function SellersPage() {
+export default async function SellersPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
+  const { error } = await searchParams;
   const d = await get("/api/sellers");
   if (d.expired) return <Expired />;
   const items = d.data?.items ?? [];
@@ -13,6 +18,7 @@ export default async function SellersPage() {
     <main>
       <div className="card">
         <h1>Sellers</h1>
+        {error && <p className="pill bad">{error}</p>}
         <p>
           We message only sellers you add here with the opt-in box ticked.
           Sellers you find on listings get an invite link from your own
@@ -37,7 +43,7 @@ export default async function SellersPage() {
                 <td>{s.opted_in ? <span className="pill ok">yes</span> : <span className="pill bad">no</span>}</td>
                 <td>
                   {s.opted_in ? (
-                    <form action={async (fd) => { await optOutSeller(fd); }}>
+                    <form action={async (fd) => { "use server"; await optOutSeller(fd); }}>
                       <input type="hidden" name="id" value={s.id} />
                       <button type="submit">Opt out</button>
                     </form>
@@ -52,7 +58,7 @@ export default async function SellersPage() {
 
       <div className="card">
         <h2>Add a seller</h2>
-        <form action={async (fd) => { await addSeller(fd); }}>
+        <form action={async (fd) => { "use server"; await addSeller(fd); }}>
           <label>
             Name
             <input className="input" name="name" maxLength={120} />

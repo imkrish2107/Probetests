@@ -25,7 +25,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <a href="/tasks">Tasks</a>
         <span className="spacer" />
         <span>{name}</span>
-        <form action={async () => { await logout(); }}>
+        <form action={async () => { "use server"; await logout(); }}>
           <button type="submit">Log out</button>
         </form>
       </nav>
