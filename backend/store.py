@@ -516,6 +516,54 @@ def selfcheck() -> None:
     assert remind_pending() == 1
     assert get_order(1, o2["id"])["status"] == "needs_followup"
     assert remind_pending() == 0, "reminded once only"
+    try:
+        import auth as _auth  # noqa: F401 (argon2 missing on bare machines)
+        _otp_live = True
+    except ImportError:
+        _otp_live = False
+    if _otp_live:
+        import auth
+        # correct code, then single use
+        create_order("escape", [{"product_id": 1, "qty": 1}], "Oa", "+915555555551",
+                     "1 A St, Kochi", True)
+        with db.connect() as conn:
+            conn.execute("INSERT INTO otps (business_id, phone, code_hash, expires_at)"
+                         " VALUES (1,?,?,?)",
+                         (digits("+915555555551"), auth.hash_password("123456"),
+                          outbound.utc_sqlite(-5 / 60)))
+            conn.commit()
+        assert verify_otp(1, "+915555555551", "123456") == (True, "ok")
+        assert verify_otp(1, "+915555555551", "123456") == (False, "no_code")
+        # 3 wrong attempts lock the code, even the right one
+        create_order("escape", [{"product_id": 1, "qty": 1}], "Ob", "+915555555552",
+                     "2 B St, Kochi", True)
+        with db.connect() as conn:
+            conn.execute("INSERT INTO otps (business_id, phone, code_hash, expires_at)"
+                         " VALUES (1,?,?,?)",
+                         (digits("+915555555552"), auth.hash_password("999999"),
+                          outbound.utc_sqlite(-5 / 60)))
+            conn.commit()
+        for _ in range(3):
+            assert verify_otp(1, "+915555555552", "000000") == (False, "bad_code")
+        assert verify_otp(1, "+915555555552", "999999") == (False, "locked")
+        # expired code
+        create_order("escape", [{"product_id": 1, "qty": 1}], "Oc", "+915555555553",
+                     "3 C St, Kochi", True)
+        with db.connect() as conn:
+            conn.execute("INSERT INTO otps (business_id, phone, code_hash, expires_at)"
+                         " VALUES (1,?,?,?)",
+                         (digits("+915555555553"), auth.hash_password("111111"),
+                          outbound.utc_sqlite(1)))
+            conn.commit()
+        assert verify_otp(1, "+915555555553", "111111") == (False, "expired")
+        # 4th send in an hour blocked
+        create_order("escape", [{"product_id": 1, "qty": 1}], "Od", "+915555555554",
+                     "4 D St, Kochi", True)
+        for _ in range(3):
+            request_otp(1, "+915555555554")
+        assert request_otp(1, "+915555555554") == {"sent": False, "message": OTP_MSG}
+    else:
+        print("store selfcheck: OTP positive tests skipped here (no argon2); VPS runs them")
     # OTP: unknown number gets the same message, no row
     m1 = request_otp(1, "+910000000000")
     assert m1["message"] == OTP_MSG and m1["sent"] is False

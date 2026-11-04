@@ -265,7 +265,18 @@ def request_change(ctx: dict, note: str = "") -> dict:
     return _order_act(ctx, "change_requested", note)
 
 
-def cancel_order(ctx: dict, reason: str = "") -> dict:
+def cancel_order(ctx: dict, order_id: int = 0, reason: str = "") -> dict:
+    """Confirmation call: no id, cancels the call's order. Support call: id plus
+    verified same-phone, before shipping only. Unverified callers get
+    not_verified so no order data leaks."""
+    if order_id:
+        import store
+        o = _support_order(ctx, order_id)
+        if not o:
+            return {"error": "not_verified" if not ctx.get("verified_phone") else "not_found"}
+        if o["status"] not in store.PRE_SHIP:
+            return {"error": "too_late", "status": o["status"]}
+        return store.order_action(ctx["business_id"], o["id"], o["phone"], "cancelled", reason)
     return _order_act(ctx, "cancelled", reason)
 
 
@@ -406,8 +417,8 @@ STORE_TOOLS = [
     _schema("confirm_order", "Confirm the call's order.", {}, []),
     _schema("request_change", "Mark change requested with a note.",
             {"note": {"type": "string"}}, []),
-    _schema("cancel_order", "Cancel the call's order.",
-            {"reason": {"type": "string"}}, []),
+    _schema("cancel_order", "Cancel the call's order, or a verified order id before shipping.",
+            {"order_id": {"type": "integer"}, "reason": {"type": "string"}}, []),
     _schema("send_otp", "Text a login code to the order phone.",
             {"phone": {"type": "string"}}, ["phone"]),
     _schema("verify_otp", "Check the spoken code. Sets verification on success.",
@@ -489,6 +500,22 @@ def selfcheck() -> None:
                     {"business_id": 1}) == {"verified": False, "reason": "no_code"}
     assert run_tool("get_order_for_call", {},
                     {"business_id": 1, "order_id": 0})["error"] == "no_order"
+    assert run_tool("cancel_order", {"order_id": 1},
+                    {"business_id": 1})["error"] == "not_verified"
+    with db.connect() as conn:
+        conn.execute("INSERT INTO businesses (slug, name) VALUES ('escape','ESCAPE')")
+        conn.execute("INSERT INTO products (business_id, slug, name, price_paise)"
+                     " VALUES (2,'tee','Tee',99900)")
+        conn.commit()
+    so = store.create_order("escape", [{"product_id": 1, "qty": 1}], "Sam", "+916666666666",
+                            "5 Sea Rd, Kochi", True)
+    vctx = {"business_id": 2, "verified_phone": "+916666666666"}
+    assert run_tool("cancel_order", {"order_id": so["id"]}, vctx)["status"] == "cancelled"
+    with db.connect() as conn:
+        conn.execute("UPDATE orders SET status = 'shipped' WHERE id = ?", (so["id"],))
+        conn.commit()
+    r = run_tool("cancel_order", {"order_id": so["id"]}, vctx)
+    assert r["error"] == "too_late" and r["status"] == "shipped", r
     assert end_call(ctx)["ended"] is True
     print("agent selfcheck: PASS")
 
