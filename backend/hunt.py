@@ -32,11 +32,18 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS hunts (
   id INTEGER PRIMARY KEY, business_id INTEGER NOT NULL REFERENCES businesses(id),
   user_id INTEGER REFERENCES users(id), status TEXT DEFAULT 'running',
+  flow TEXT DEFAULT 'shopping',
+  approved_at TEXT DEFAULT '', approved_by INTEGER DEFAULT 0, approved_hash TEXT DEFAULT '',
   photo_path TEXT DEFAULT '', size_pref TEXT DEFAULT '', budget REAL,
   spot TEXT DEFAULT '{}', top_reason TEXT DEFAULT '',
   tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0,
   searches_used INTEGER DEFAULT 0, error TEXT DEFAULT '',
   created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS hunt_items (
+  id INTEGER PRIMARY KEY, hunt_id INTEGER NOT NULL REFERENCES hunts(id),
+  name TEXT NOT NULL, spec TEXT DEFAULT '{}', quantity REAL DEFAULT 1,
+  unit TEXT DEFAULT '', status TEXT DEFAULT 'sourcing'
 );
 CREATE TABLE IF NOT EXISTS hunt_steps (
   id INTEGER PRIMARY KEY, hunt_id INTEGER NOT NULL REFERENCES hunts(id),
@@ -45,8 +52,10 @@ CREATE TABLE IF NOT EXISTS hunt_steps (
 );
 CREATE TABLE IF NOT EXISTS listings (
   id INTEGER PRIMARY KEY, hunt_id INTEGER NOT NULL REFERENCES hunts(id),
+  hunt_item_id INTEGER REFERENCES hunt_items(id),
   business_id INTEGER NOT NULL, url TEXT NOT NULL, title TEXT DEFAULT '',
   seller TEXT DEFAULT '', price REAL, currency TEXT DEFAULT '',
+  unit TEXT DEFAULT '', city TEXT DEFAULT '',
   in_stock TEXT DEFAULT 'unknown', delivery TEXT DEFAULT '',
   image_url TEXT DEFAULT '', whatsapp TEXT DEFAULT '',
   similarity INTEGER DEFAULT 0, match_reason TEXT DEFAULT '',
@@ -85,6 +94,17 @@ _reasoning_ok = True  # set False on first 400 naming reasoning (logged)
 def init_db() -> None:
     with db.connect() as conn:
         conn.executescript(SCHEMA)
+        # migrate dev DBs made before the engine columns existed
+        hcols = [r[1] for r in conn.execute("PRAGMA table_info(hunts)")]
+        for col in ("flow TEXT DEFAULT 'shopping'", "approved_at TEXT DEFAULT ''",
+                    "approved_by INTEGER DEFAULT 0", "approved_hash TEXT DEFAULT ''"):
+            if col.split()[0] not in hcols:
+                conn.execute(f"ALTER TABLE hunts ADD COLUMN {col}")
+        lcols = [r[1] for r in conn.execute("PRAGMA table_info(listings)")]
+        for col in ("hunt_item_id INTEGER REFERENCES hunt_items(id)",
+                    "unit TEXT DEFAULT ''", "city TEXT DEFAULT ''"):
+            if col.split()[0] not in lcols:
+                conn.execute(f"ALTER TABLE listings ADD COLUMN {col}")
         conn.commit()
 
 
@@ -297,38 +317,56 @@ def is_product_url(u: str) -> bool:
     return len(p.path.strip("/")) > 0  # homepage isn't a product page
 
 
+# The only place the flows differ. Agents below take (item, profile).
+PROFILES = {
+    "shopping": {"intake": "photo", "match": "photo", "contact": "whatsapp",
+                 "location": "delivers to user"},
+    "construction": {"intake": "plan", "match": "spec", "contact": "call",
+                     "location": "same city preferred"},
+}
+
+
 def finder(spot: dict, country: str = "IN") -> tuple[list[dict], int]:
-    """Up to 3 web searches, at most 12 product pages, deduped."""
+    """Shopping Finder: phrases from what Spotter saw. Shared engine below."""
     phrases = (spot.get("phrases") or [])[:3]
     if not phrases:
         g = f"{spot.get('colour', '')} {spot.get('garment', '')}".strip()
         phrases = [g or "shirt"]
+    queries = [f"{ph} buy online price India" for ph in phrases]
+    found, usages, searches = find_listings(queries, country)
+    finder.usages.extend(usages)  # type: ignore[attr-defined]
+    return found, searches
+
+
+def find_listings(queries: list[str], country: str = "IN", max_n: int = 12,
+                  max_searches: int = 3) -> tuple[list[dict], list[dict], int]:
+    """Shared Finder: web_search per query, product pages only, deduped."""
     found: list[dict] = []
     seen: set[str] = set()
+    usages: list[dict] = []
     searches = 0
-    for ph in phrases[:3]:
+    for q in queries[:max_searches]:
         data, usage = responses_request({
             "model": MODEL,
-            "input": f"{ph} buy online price India",
+            "input": q,
             "tools": [{"type": "web_search",
                        "user_location": {"type": "approximate", "country": country}}],
             "include": ["web_search_call.results"]})
         searches += 1
-        finder.usages.append(usage)  # type: ignore[attr-defined]
+        usages.append(usage)
         for r in search_results(data):
             norm = normalize_url(r["url"])
             if norm not in seen and is_product_url(r["url"]):
                 seen.add(norm)
                 found.append(r)
-            if len(found) >= 12:
+            if len(found) >= max_n:
                 break
-        if len(found) >= 12:
+        if len(found) >= max_n:
             break
-    finder.usages = getattr(finder, "usages", [])
-    return found, searches
+    return found, usages, searches
 
 
-# usage collector: Finder runs several calls; stash them for the hunt loop.
+# usage collector: shopping Finder stash for the hunt loop.
 finder.usages = []  # type: ignore[attr-defined]
 
 
@@ -510,8 +548,9 @@ def extract_listing(page: bytes) -> dict:
     return out
 
 
-def check_url(url: str) -> dict:
-    """Fetch one candidate; never raises (returns note on failure)."""
+def check_listing(url: str, profile: dict | None = None) -> dict:
+    """Shared Checker: fetch one candidate; never raises (note on failure).
+    profile is the flow profile; parsing rules are identical for both flows."""
     try:
         body, final = polite_get(url)
     except FetchError as e:
@@ -572,6 +611,27 @@ def match_one(crop_b64: str, image_url: str) -> tuple[int, str, dict]:
 
 # ---- Ranker (plain code, no model) ----
 
+# Base units: mass -> kg, volume -> cft. Unconvertible stays unranked.
+_TO_BASE = {"kg": ("kg", 1), "kgs": ("kg", 1), "quintal": ("kg", 100),
+            "q": ("kg", 100), "quintals": ("kg", 100),
+            "tonne": ("kg", 1000), "tonnes": ("kg", 1000), "ton": ("kg", 1000),
+            "tons": ("kg", 1000), "mt": ("kg", 1000),
+            "cft": ("cft", 1), "cuft": ("cft", 1), "brass": ("cft", 100),
+            "bag": ("bag", 1), "bags": ("bag", 1),
+            "piece": ("piece", 1), "pieces": ("piece", 1), "nos": ("piece", 1)}
+
+
+def to_base(price: float, unit: str) -> tuple[float, str] | None:
+    """Price per base unit, or None when the unit can't be converted."""
+    u = (unit or "").strip().lower()
+    if u in ("", "nos"):
+        u = "piece"
+    conv = _TO_BASE.get(u)
+    if conv is None or price is None:
+        return None
+    base, mult = conv
+    return price / mult, base
+
 def _delivery_fee(delivery: str) -> float:
     fees = [float(n.replace(",", "")) for n in
             re.findall(r"₹\s*([\d,]+)", delivery or "")]
@@ -580,14 +640,60 @@ def _delivery_fee(delivery: str) -> float:
     return min(fees) if fees else 0.0
 
 
-def rank_listings(rows: list[dict]) -> list[dict]:
-    """Verified first, then in stock, then lowest price+delivery, similarity."""
-    def key(r: dict):
-        total = (r.get("price") if r.get("price") is not None else float("inf")
-                 ) + _delivery_fee(r.get("delivery", ""))
+def rank(item: dict, rows: list[dict]) -> dict:
+    """Shared Ranker. item: quantity, unit, city. Returns ordered rows plus
+    cheapest/best ids and one-line reasons. Rows without a real price or
+    with an unconvertible unit keep their data but stay unranked at the end.
+    Never estimates a price: no price means "Quote needed"."""
+    qty = item.get("quantity") or 1
+    unit = item.get("unit") or ""
+    city = (item.get("city") or "").strip().lower()
+    scored = []
+    for r in rows:
+        conv = to_base(r.get("price"), r.get("unit") or unit or "piece")
+        if r.get("price") is None or conv is None:
+            scored.append((None, r))
+            continue
+        per_base, _ = conv
+        total = per_base * qty + _delivery_fee(r.get("delivery", ""))
+        scored.append((total, r))
+    priced = [(t, r) for t, r in scored if t is not None]
+    unranked = [r for t, r in scored if t is None]
+
+    def sort_key(pair: tuple) -> tuple:
+        t, r = pair
         return (not r.get("verified"), r.get("in_stock") != "yes",
-                total, -(r.get("similarity") or 0))
-    return sorted(rows, key=key)
+                t, -(r.get("similarity") or 0))
+
+    ordered = [r for _, r in sorted(priced, key=sort_key)] + unranked
+    cheapest = min(priced, key=lambda p: p[0])[1] if priced else None
+    best = None
+    for _, r in sorted(priced, key=sort_key):
+        if not r.get("verified") or r.get("in_stock") != "yes":
+            continue
+        if city and (r.get("city") or "") and city not in r["city"].lower():
+            continue
+        best = r
+        break
+    n = len(priced)
+    reasons = {}
+    if cheapest is not None:
+        reasons["cheapest"] = (
+            f"Cheapest of {n} compared: "
+            f"{(cheapest.get('seller') or cheapest.get('title', ''))[:60]}")
+    if best is not None:
+        label = "Best and cheapest" if best is cheapest else "Best"
+        reasons["best"] = (
+            f"{label} of {n} compared: "
+            f"{(best.get('seller') or best.get('title', ''))[:60]}")
+    return {"ordered": ordered, "cheapest": cheapest, "best": best,
+            "reasons": reasons, "compared": n,
+            "unranked": len(unranked)}
+
+
+def rank_listings(rows: list[dict]) -> list[dict]:
+    """Shopping order view: same engine, quantity 1."""
+    return rank({"quantity": 1, "unit": ""}, rows)["ordered"]
 
 
 # ---- hunt loop ----
@@ -617,6 +723,13 @@ def _run_hunt(hunt_id: int) -> None:
             raise RuntimeError("Photo shows no garment; try a clear shirt photo.")
         step(hunt_id, "Spotter", "done",
              f"{spot.get('colour', '')} {spot.get('garment', '')}".strip())
+        with db.connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO hunt_items (hunt_id, name, spec, quantity, unit)"
+                " VALUES (?, ?, ?, 1, '')",
+                (hunt_id, spot.get("garment", "item")[:120], json.dumps(spot)))
+            item_id = cur.lastrowid
+            conn.commit()
 
         step(hunt_id, "Finder", "running")
         finder.usages = []  # type: ignore[attr-defined]
@@ -633,7 +746,7 @@ def _run_hunt(hunt_id: int) -> None:
         step(hunt_id, "Finder", "done", f"{len(cands)} candidates")
 
         step(hunt_id, "Checker", "running")
-        checked = [check_url(c["url"]) for c in cands]
+        checked = [check_listing(c["url"], PROFILES["shopping"]) for c in cands]
         step(hunt_id, "Checker", "done",
              f"{sum(1 for c in checked if c.get('price') is not None)} priced")
 
@@ -653,13 +766,17 @@ def _run_hunt(hunt_id: int) -> None:
             verified = 1 if c.get("verify") else 0
             with db.connect() as conn:
                 conn.execute(
-                    """INSERT INTO listings (hunt_id, business_id, url, title,
-                       seller, price, currency, in_stock, delivery, image_url,
+                    """INSERT INTO listings (hunt_id, hunt_item_id,
+                       business_id, url, title,
+                       seller, price, currency, unit, city, in_stock, delivery,
+                       image_url,
                        whatsapp, similarity, match_reason, verified, verify_note)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (hunt_id, bid, c.get("url", ""), c.get("title", "")[:200],
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (hunt_id, item_id, bid, c.get("url", ""),
+                     c.get("title", "")[:200],
                      c.get("seller", "")[:120], c.get("price"),
-                     c.get("currency", ""), c.get("in_stock", "unknown"),
+                     c.get("currency", ""), "", "",
+                     c.get("in_stock", "unknown"),
                      c.get("delivery", "")[:200], c.get("image", ""),
                      c.get("whatsapp", ""), c.get("similarity", 0),
                      c.get("match_reason", "")[:500], verified,
@@ -856,7 +973,7 @@ def selfcheck() -> None:
                  "https://youtu.be/abc", "javascript:alert(1)"):
         assert is_product_url(junk) is False, junk
     assert normalize_url("https://S.example/P/?utm=x") == "s.example/p"
-    # ranking: verified, in stock, cheapest total, similarity
+    # ranking still passes through the shared engine
     rows = [
         {"price": 900, "delivery": "", "in_stock": "yes",
          "verified": 0, "similarity": 99},
@@ -868,6 +985,39 @@ def selfcheck() -> None:
          "verified": 1, "similarity": 75},
     ]
     assert [r["price"] for r in rank_listings(rows)] == [1100, 1200, 1000, 900]
+    # unit conversion: tonne/quintal to kg, brass to cft
+    assert to_base(52000, "tonne") == (52.0, "kg")
+    assert to_base(6200, "quintal") == (62.0, "kg")
+    assert to_base(5000, "brass") == (50.0, "cft")
+    assert to_base(100, "bag") == (100.0, "bag")
+    assert to_base(100, "lot") is None  # unconvertible
+    assert to_base(None, "kg") is None
+    # Best vs Cheapest on a construction item
+    crows = [
+        {"seller": "Far Vendor", "price": 50, "unit": "kg", "city": "Delhi",
+         "in_stock": "yes", "verified": 1, "delivery": "", "similarity": 0},
+        {"seller": "Local Vendor", "price": 55, "unit": "kg", "city": "Jaipur",
+         "in_stock": "yes", "verified": 1, "delivery": "",
+         "similarity": 0},
+        {"seller": "NoStock", "price": 40, "unit": "kg", "city": "Jaipur",
+         "in_stock": "no", "verified": 1, "delivery": "", "similarity": 0},
+        {"seller": "QuoteMe", "price": None, "unit": "kg", "city": "Jaipur",
+         "in_stock": "unknown", "verified": 0, "delivery": "",
+         "similarity": 0},
+        {"seller": "WeirdLot", "price": 30, "unit": "lot", "city": "Jaipur",
+         "in_stock": "yes", "verified": 1, "delivery": "", "similarity": 0},
+    ]
+    res = rank({"quantity": 100, "unit": "kg", "city": "Jaipur"}, crows)
+    assert res["cheapest"]["seller"] == "NoStock", res["reasons"]  # lowest total
+    assert res["best"]["seller"] == "Local Vendor", res["reasons"]  # in area+stock
+    assert res["compared"] == 3 and res["unranked"] == 2, res  # quote+lot aside
+    assert res["ordered"][-2]["seller"] == "QuoteMe"
+    assert res["ordered"][-1]["seller"] == "WeirdLot"
+    # same vendor is both: one row, both labels
+    same = rank({"quantity": 1, "unit": "kg", "city": ""},
+                [dict(crows[1], in_stock="yes")])
+    assert same["best"] is same["cheapest"]
+    assert same["reasons"]["best"].startswith("Best and cheapest")
     # business isolation on a temp DB
     tmp = tempfile.mkdtemp()
     old = db.DB_PATH
@@ -925,7 +1075,7 @@ if __name__ == "__main__":
         print("checker+matcher...")
         out = []
         for c in cands:
-            info = check_url(c["url"])
+            info = check_listing(c["url"])
             info["title"] = info.get("title") or c.get("title", "")
             if info.get("image"):
                 sim, why, mu = match_one(crop, info["image"])
