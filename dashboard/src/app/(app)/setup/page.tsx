@@ -1,4 +1,5 @@
 import { api, sessionToken } from "@/lib/api";
+import { get, Expired } from "@/lib/ui";
 import { saveSetup } from "@/lib/actions";
 
 export const dynamic = "force-dynamic";
@@ -82,6 +83,40 @@ export default async function SetupPage({
           </p>
         )}
       </div>
+      <StatusCard />
     </main>
+  );
+}
+
+// Live WhatsApp connection + template approvals from Meta (cached 5 min).
+async function StatusCard() {
+  const d = await get("/api/templates");
+  if (d.expired) return <Expired />;
+  const items: any[] = d.data?.items ?? [];
+  const find = (n: string) => items.find((t) => t.name === n);
+  const qr = find("quote_request");
+  const cp = find("call_permission");
+  return (
+    <div className="card">
+      <h2>WhatsApp status</h2>
+      {items.length === 0 && (
+        <p>
+          No token on the server, or no templates submitted yet. Stock checks
+          and quote requests fall back to the invite link from your own
+          WhatsApp until <em>quote_request</em> is approved; vendor calls wait
+          on <em>call_permission</em>.
+        </p>
+      )}
+      {qr && (
+        <p>
+          quote_request: <span className="pill">{qr.status}</span>
+        </p>
+      )}
+      {cp && (
+        <p>
+          call_permission: <span className="pill">{cp.status}</span>
+        </p>
+      )}
+    </div>
   );
 }

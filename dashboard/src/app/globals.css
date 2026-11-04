@@ -1,87 +1,182 @@
-/* KX UI placeholders until real tokens land. */
+/* Ledger: warm paper, ink, oxblood used sparingly. Hairlines, sharp corners. */
 :root {
-  --bg: #faf6ee;
-  --ink: #1f1b16;
-  --accent: #25d366;
+  --paper: #f4f0e8;
+  --card: #fbf8f1;
+  --ink: #1c1a17;
+  --muted: #6b6259;
+  --line: #d8d0c0;
+  --oxblood: #6e1f1b;
+  --ok: #2e6b34;
 }
 * {
   box-sizing: border-box;
 }
+html {
+  -webkit-text-size-adjust: 100%;
+}
 body {
   margin: 0;
-  background: var(--bg);
+  background: var(--paper);
   color: var(--ink);
+  font-family: "Familjen Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+h1,
+h2,
+h3 {
+  font-family: Newsreader, Georgia, "Times New Roman", serif;
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0 0 8px;
 }
 main {
-  max-width: 720px;
+  max-width: 880px;
   margin: 0 auto;
   padding: 24px 16px 64px;
 }
-.card {
-  background: #fff;
-  border-radius: 16px;
-  padding: 20px;
-  margin: 16px 0;
-  box-shadow: 0 1px 4px rgb(0 0 0 / 0.06);
-}
-.btn {
-  background: var(--accent);
-  color: #fff;
-  border: 0;
-  border-radius: 999px;
-  padding: 12px 24px;
-  font-size: 16px;
-  font-weight: 700;
-  cursor: pointer;
-}
-.input {
-  display: block;
-  width: 100%;
-  margin: 8px 0 16px;
-  padding: 12px;
-  font-size: 16px;
-  border: 1px solid #ddd;
-  border-radius: 12px;
-}
-label {
-  font-weight: 500;
-}
-.error {
-  color: #b3261e;
-  font-weight: 500;
+a {
+  color: var(--oxblood);
 }
 .topbar {
   display: flex;
-  gap: 16px;
-  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  align-items: baseline;
+  border-bottom: 1px solid var(--ink);
   padding: 12px 16px;
-  background: #fff;
-  border-bottom: 1px solid #eee;
+  background: var(--paper);
 }
 .topbar a {
   color: var(--ink);
   text-decoration: none;
-  font-weight: 500;
+  font-weight: 600;
+}
+.topbar a:first-child {
+  font-family: Newsreader, Georgia, serif;
+  font-size: 18px;
 }
 .topbar .spacer {
   flex: 1;
 }
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 16px;
+  margin: 16px 0;
+}
+.card h1 {
+  font-size: 24px;
+}
+.card h2 {
+  font-size: 20px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+.btn {
+  background: var(--ink);
+  color: var(--paper);
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  padding: 10px 18px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn.danger {
+  background: transparent;
+  color: var(--oxblood);
+  border-color: var(--oxblood);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.input,
+select.input,
+textarea.input {
+  display: block;
+  width: 100%;
+  margin: 6px 0 14px;
+  padding: 10px;
+  font-size: 16px;
+  font-family: inherit;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+}
+label {
+  font-weight: 600;
+  font-size: 14px;
+}
+label .norm {
+  font-weight: 400;
+}
+table.ledger {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  margin: 8px 0;
+}
+table.ledger th,
+table.ledger td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+table.ledger th {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
 .pill {
   display: inline-block;
-  background: var(--ink);
-  color: #fff;
-  border-radius: 999px;
-  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0 6px;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
+  white-space: nowrap;
 }
-.bubble-left {
-  background: #f1ece2;
-  border-radius: 4px 16px 16px 16px;
-  padding: 10px 14px;
+.pill.ok {
+  border-color: var(--ok);
+  color: var(--ok);
 }
-.bubble-right {
-  background: #e6f7ec;
-  border-radius: 16px 4px 16px 16px;
-  padding: 10px 14px;
+.pill.bad {
+  border-color: var(--oxblood);
+  color: var(--oxblood);
+}
+.muted {
+  color: var(--muted);
+}
+.warning {
+  border-left: 3px solid var(--oxblood);
+  padding: 8px 12px;
+  margin: 12px 0;
+  font-size: 14px;
+}
+.steps {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+}
+.steps li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+img.plan,
+img.shot {
+  max-width: 100%;
+  border: 1px solid var(--line);
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
 }

@@ -28,3 +28,19 @@ export async function api(path: string, init?: RequestInit, token?: string) {
   if (!res.ok) throw new ApiError(res.status, data?.error?.message ?? "request failed");
   return data;
 }
+
+// Multipart POST (photo/plan upload): no JSON content type.
+export async function postForm(path: string, form: FormData, token?: string) {
+  const headers: Record<string, string> = {};
+  if (KEY) headers["X-API-Key"] = KEY;
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${BACKEND}${path}`, {
+    method: "POST",
+    headers,
+    body: form,
+    cache: "no-store",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError(res.status, data?.error?.message ?? "request failed");
+  return data;
+}

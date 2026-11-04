@@ -2,7 +2,181 @@
 // Server actions: login, signup, logout, save setup. Cookie is httpOnly.
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { api, sessionToken, ApiError } from "./api";
+import { api, postForm, sessionToken, ApiError } from "./api";
+
+// ---- Hunts (shopping + construction) ----
+
+export async function createHunt(form: FormData) {
+  const token = await sessionToken();
+  const flow = String(form.get("flow") || "shopping");
+  const file = form.get("file");
+  if (!(file instanceof File) || file.size === 0) return { error: "attach a photo or plan" };
+  const out = new FormData();
+  out.append(flow === "construction" ? "plan" : "photo", file);
+  out.append("flow", flow);
+  for (const k of ["size", "budget", "city", "floors", "floor_height_ft", "finish", "builtup_sqft"]) {
+    const v = form.get(k);
+    if (v !== null && String(v) !== "") out.append(k, String(v));
+  }
+  try {
+    const data = await postForm("/api/hunts", out, token);
+    redirect(`/hunts/${data.id}`);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+}
+
+export async function deleteHunt(form: FormData) {
+  const token = await sessionToken();
+  try {
+    await api(`/api/hunts/${form.get("id")}`, { method: "DELETE" }, token);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+  redirect("/hunts");
+}
+
+export async function confirmRooms(form: FormData) {
+  // Inputs: name-{i}, length-{i}, width-{i}; unit-{i} hidden; count hidden.
+  const token = await sessionToken();
+  const n = Number(form.get("count") || 0);
+  const rooms = [];
+  for (let i = 0; i < n; i++) {
+    const name = String(form.get(`name-${i}`) || "").trim();
+    if (!name) continue;
+    rooms.push({
+      name,
+      length: Number(form.get(`length-${i}`) || 0),
+      width: Number(form.get(`width-${i}`) || 0),
+      unit: String(form.get(`unit-${i}`) || "ft"),
+    });
+  }
+  try {
+    await api(`/api/hunts/${form.get("id")}/rooms`, {
+      method: "PATCH",
+      body: JSON.stringify({ rooms }),
+    }, token);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+  redirect(`/hunts/${form.get("id")}`);
+}
+
+export async function buildBoq(form: FormData) {
+  const token = await sessionToken();
+  try {
+    await api(`/api/hunts/${form.get("id")}/boq`, { method: "POST", body: "{}" }, token);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+  redirect(`/hunts/${form.get("id")}`);
+}
+
+export async function editBoqQty(form: FormData) {
+  const token = await sessionToken();
+  try {
+    await api(`/api/hunts/${form.get("id")}/boq`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: form.get("name"), quantity: Number(form.get("quantity")) }),
+    }, token);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+  redirect(`/hunts/${form.get("id")}`);
+}
+
+export async function genImage(form: FormData) {
+  const token = await sessionToken();
+  try {
+    await api(`/api/hunts/${form.get("id")}/image`, {
+      method: "POST",
+      body: JSON.stringify({ style: String(form.get("style") || "") }),
+    }, token);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+  redirect(`/hunts/${form.get("id")}`);
+}
+
+export async function approveHunt(form: FormData) {
+  const token = await sessionToken();
+  try {
+    await api(`/api/hunts/${form.get("id")}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ image: String(form.get("image") || "") }),
+    }, token);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+  redirect(`/hunts/${form.get("id")}`);
+}
+
+export async function startVendorSearch(form: FormData) {
+  const token = await sessionToken();
+  const ids = form.getAll("item").map(Number).filter(Boolean);
+  try {
+    await api(`/api/hunts/${form.get("id")}/vendors`, {
+      method: "POST",
+      body: JSON.stringify({ item_ids: ids.length ? ids : null }),
+    }, token);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+  redirect(`/hunts/${form.get("id")}`);
+}
+
+// ---- Sellers ----
+
+export async function addSeller(form: FormData) {
+  const token = await sessionToken();
+  if (!form.get("agreed")) return { error: "the opt-in checkbox is required" };
+  try {
+    await api("/api/sellers", {
+      method: "POST",
+      body: JSON.stringify({
+        name: String(form.get("name") || ""),
+        phone: String(form.get("phone") || ""),
+        kind: String(form.get("kind") || "shop"),
+        agreed: true,
+      }),
+    }, token);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+  redirect("/sellers");
+}
+
+export async function optOutSeller(form: FormData) {
+  const token = await sessionToken();
+  try {
+    await api(`/api/sellers/${form.get("id")}`, {
+      method: "PATCH",
+      body: JSON.stringify({ opted_in: false }),
+    }, token);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+  redirect("/sellers");
+}
+
+export async function stockCheck(form: FormData) {
+  // Two-step: without send=1, shows the exact message first; with it, sends.
+  const token = await sessionToken();
+  const listing = String(form.get("listing_id"));
+  const hid = String(form.get("hunt_id"));
+  try {
+    await api(`/api/listings/${listing}/stock-check`, {
+      method: "POST",
+      body: JSON.stringify({
+        seller_id: Number(form.get("seller_id") || 0) || null,
+        preview: !form.get("send"),
+      }),
+    }, token);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+  redirect(form.get("send") ? `/hunts/${hid}` : `/hunts/${hid}?preview=${listing}`);
+}
 
 const COOKIE = {
   httpOnly: true,

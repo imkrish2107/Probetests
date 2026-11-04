@@ -15,11 +15,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <>
       <nav className="topbar">
-        <a href="/">Calls</a>
-        <a href="/bookings">Bookings</a>
-        <a href="/tasks">Tasks</a>
-        <a href="/contacts">Contacts</a>
+        <a href="/hunts">Agent dashboard</a>
+        <a href="/hunts">Hunts</a>
+        <a href="/sellers">Sellers</a>
         <a href="/setup">Setup</a>
+        <a href="/">Calls</a>
+        <a href="/contacts">Contacts</a>
+        <a href="/tasks">Tasks</a>
         <span className="spacer" />
         <span>{name}</span>
         <form action={async () => { await logout(); }}>
