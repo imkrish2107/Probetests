@@ -181,7 +181,8 @@ def responses_request(payload: dict, timeout: int = 90) -> tuple[dict, dict]:
 
 
 def chat_structured(prompt: str, schema: dict, image_b64: str | None = None,
-                    max_tokens: int = 600) -> tuple[dict, dict]:
+                    max_tokens: int = 600, pdf_b64: str | None = None,
+                    filename: str = "plan.pdf") -> tuple[dict, dict]:
     """Chat completions + json_schema response_format. No tools: page/model
     text is untrusted data, so the call can only return fields."""
     import httpx
@@ -190,6 +191,9 @@ def chat_structured(prompt: str, schema: dict, image_b64: str | None = None,
     if image_b64:
         content.append({"type": "image_url",
                         "image_url": {"url": "data:image/jpeg;base64," + image_b64}})
+    if pdf_b64:
+        content.append({"type": "file", "filename": filename,
+                        "file_data": "data:application/pdf;base64," + pdf_b64})
     r = httpx.post(
         f"{API}/chat/completions", headers={"Authorization": f"Bearer {_key()}"},
         json={"model": MODEL, "messages": [{"role": "user", "content": content}],
@@ -240,6 +244,144 @@ def find_box(data: dict) -> tuple[int, int, int, int] | None:
 
 
 # ---- photos ----
+
+def save_intake(business_id: int, hunt_id: int, raw: bytes) -> tuple[str, str]:
+    """Validate + save a hunt file. Returns (rel path, kind).
+    Images are re-encoded (metadata stripped); PDFs are saved as-is."""
+    if len(raw) > 8 * 1024 * 1024:
+        raise ValueError("file over 8 MB")
+    if raw[:4] == b"%PDF":
+        d = DATA / str(business_id)
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"{hunt_id}.pdf"
+        p.write_bytes(raw)
+        return f"{business_id}/{hunt_id}.pdf", "pdf"
+    return save_photo(business_id, hunt_id, raw), "image"
+
+
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "readable": {"type": "boolean"},
+        "has_dimensions": {"type": "boolean"},
+        "rooms": {"type": "array", "items": {"type": "object", "properties": {
+            "name": {"type": "string"}, "length": {"type": ["number", "null"]},
+            "width": {"type": ["number", "null"]}, "unit": {"type": "string"},
+            "seen_text": {"type": "string"}, "confidence": {"type": "string"}},
+            "required": ["name"]}},
+        "door_count": {"type": ["integer", "null"]},
+        "window_count": {"type": ["integer", "null"]},
+        "bathroom_count": {"type": ["integer", "null"]},
+    },
+    "required": ["readable", "rooms"],
+}
+
+
+def read_plan(raw: bytes) -> tuple[dict, dict]:
+    """Plan Reader: reports only what the drawing prints. No arithmetic,
+    no guessing: missing dimensions stay empty."""
+    import base64
+    prompt = (
+        "Read this floor plan. For each room report name, length, width, unit"
+        " (ft or m) and the exact dimension text printed on the drawing, plus"
+        " confidence (high/low). Copy numbers only as printed; never convert,"
+        " compute or fill in missing ones: use null. Also count doors,"
+        " windows and bathrooms if shown. readable false if this is not a"
+        " readable plan, has_dimensions false if no dimensions are printed.")
+    if raw[:4] == b"%PDF":
+        return chat_structured(prompt, PLAN_SCHEMA, None, max_tokens=1200,
+                               pdf_b64=base64.b64encode(raw).decode())
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(raw)).convert("RGB")
+    img.thumbnail((1536, 1536))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=85)
+    return chat_structured(prompt, PLAN_SCHEMA,
+                           base64.b64encode(buf.getvalue()).decode(),
+                           max_tokens=1200)
+
+
+def _run_plan(hunt_id: int) -> None:
+    with db.connect() as conn:
+        h = conn.execute("SELECT * FROM hunts WHERE id = ?", (hunt_id,)).fetchone()
+    if not h:
+        return
+    try:
+        raw = photo_bytes(h["photo_path"] or "")
+        if not raw:
+            raise RuntimeError("plan file missing")
+        step(hunt_id, "Plan Reader", "running")
+        plan, u = read_plan(raw)
+        add_usage(hunt_id, u["in"], u["out"])
+        if not plan.get("readable"):
+            step(hunt_id, "Plan Reader", "failed", "plan unreadable")
+            raise RuntimeError("Plan unreadable: upload a clearer plan.")
+        with db.connect() as conn:
+            conn.execute("DELETE FROM hunt_items WHERE hunt_id = ?", (hunt_id,))
+            for r in plan.get("rooms") or []:
+                conn.execute(
+                    "INSERT INTO hunt_items (hunt_id, name, spec, quantity,"
+                    " unit, status) VALUES (?, ?, ?, 0, '', 'room')",
+                    (hunt_id, str(r.get("name") or "Room")[:80],
+                     json.dumps({k: r.get(k) for k in
+                                 ("length", "width", "unit", "seen_text",
+                                  "confidence")})))
+            conn.execute("UPDATE hunts SET status = 'awaiting_rooms',"
+                         " spot = ? WHERE id = ?",
+                         (json.dumps({k: plan.get(k) for k in
+                                      ("door_count", "window_count",
+                                       "bathroom_count", "has_dimensions")}),
+                          hunt_id))
+            conn.commit()
+        step(hunt_id, "Plan Reader", "done",
+             f"{len(plan.get('rooms') or [])} rooms; check them below")
+    except Exception as e:
+        log.warning("plan %s failed: %s", hunt_id, e)
+        with db.connect() as conn:
+            conn.execute("UPDATE hunts SET status = 'failed', error = ? WHERE id = ?",
+                         (str(e)[:500], hunt_id))
+            conn.commit()
+        step(hunt_id, "Plan Reader", "failed", str(e)[:500])
+
+
+def confirm_rooms(hunt_id: int, bid: int, rooms: list[dict]) -> dict:
+    """Room check: user-edited rooms replace the Reader's; gates the BOQ."""
+    with db.connect() as conn:
+        h = conn.execute("SELECT status FROM hunts WHERE id = ? AND business_id = ?",
+                         (hunt_id, bid)).fetchone()
+        if not h:
+            raise ValueError("unknown hunt")
+        if h["status"] not in ("awaiting_rooms", "rooms_confirmed"):
+            raise ValueError("rooms are not ready to check yet")
+        cleaned = []
+        for r in rooms:
+            name = str(r.get("name") or "").strip()[:80]
+            if not name:
+                continue
+            try:
+                ln = float(r.get("length") or 0)
+                wd = float(r.get("width") or 0)
+            except (ValueError, TypeError):
+                raise ValueError(f"bad size for {name}")
+            if ln < 0 or wd < 0:
+                raise ValueError(f"bad size for {name}")
+            cleaned.append((name, ln, wd, str(r.get("unit") or "ft")[:10]))
+        if not cleaned:
+            raise ValueError("at least one room is required")
+        conn.execute("DELETE FROM hunt_items WHERE hunt_id = ? AND status = 'room'",
+                     (hunt_id,))
+        for name, ln, wd, unit in cleaned:
+            conn.execute("INSERT INTO hunt_items (hunt_id, name, spec, quantity,"
+                         " unit, status) VALUES (?, ?, ?, 0, ?, 'room')",
+                         (hunt_id, name,
+                          json.dumps({"length": ln, "width": wd, "unit": unit}),
+                          unit))
+        conn.execute("UPDATE hunts SET status = 'rooms_confirmed' WHERE id = ?",
+                     (hunt_id,))
+        conn.commit()
+    return {"rooms": len(cleaned)}
+
 
 def save_photo(business_id: int, hunt_id: int, raw: bytes) -> str:
     """Validate, strip metadata by re-encode, save. Returns relative path."""
@@ -805,7 +947,7 @@ def _run_hunt(hunt_id: int) -> None:
 # ---- routes ----
 
 def routes(app, *, require_api_key, need_login, api_error) -> None:
-    from fastapi import BackgroundTasks, Request
+    from fastapi import BackgroundTasks, Request, Response
     from fastapi.responses import FileResponse, JSONResponse
 
     @app.post("/api/hunts", status_code=201)
@@ -819,17 +961,36 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
             form = await request.form()
         except Exception:
             return api_error("invalid", "need multipart photo upload", 422)
-        up = form.get("photo")
+        up = form.get("photo") or form.get("plan")
         data = await up.read() if up and hasattr(up, "read") else b""
         if not data:
-            return api_error("invalid", "photo required", 422)
+            return api_error("invalid", "photo or plan file required", 422)
         if len(data) > 8 * 1024 * 1024:
-            return api_error("invalid", "photo over 8 MB", 422)
+            return api_error("invalid", "file over 8 MB", 422)
+        flow = str(form.get("flow") or "shopping")
+        if flow not in ("shopping", "construction"):
+            return api_error("invalid", "flow is shopping or construction", 422)
         size_pref = str(form.get("size") or "")[:10]
         try:
             budget = float(form.get("budget") or 0) or None
         except ValueError:
             budget = None
+        intake = {}
+        if flow == "construction":
+            try:
+                floors = int(form.get("floors") or 1)
+            except ValueError:
+                floors = 1
+            try:
+                fh = float(form.get("floor_height_ft") or 10)
+            except ValueError:
+                fh = 10.0
+            intake = {"city": str(form.get("city") or "")[:80],
+                      "floors": max(1, floors), "floor_height_ft": fh,
+                      "finish": str(form.get("finish") or "standard")[:20],
+                      "builtup_sqft": str(form.get("builtup_sqft") or "")[:20]}
+            if intake["finish"] not in ("basic", "standard", "premium"):
+                return api_error("invalid", "finish is basic/standard/premium", 422)
         with db.connect() as conn:
             running = conn.execute(
                 "SELECT id FROM hunts WHERE business_id = ? AND status = 'running'",
@@ -843,13 +1004,14 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
             if today >= 20:
                 return api_error("limited", "20 hunts per day", 429)
             cur = conn.execute(
-                "INSERT INTO hunts (business_id, user_id, size_pref, budget)"
-                " VALUES (?, ?, ?, ?)",
-                (u["business_id"], u["id"], size_pref, budget))
+                "INSERT INTO hunts (business_id, user_id, flow, size_pref, budget, spot)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (u["business_id"], u["id"], flow, size_pref, budget,
+                 json.dumps(intake)))
             hid = cur.lastrowid
             conn.commit()
         try:
-            rel = save_photo(u["business_id"], hid, data)
+            rel, kind = save_intake(u["business_id"], hid, data)
         except ValueError as e:
             with db.connect() as conn:
                 conn.execute("DELETE FROM hunts WHERE id = ?", (hid,))
@@ -859,9 +1021,14 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
             conn.execute("UPDATE hunts SET photo_path = ? WHERE id = ?", (rel, hid))
             conn.commit()
         gc_photos()
-        step(hid, "Spotter", "queued")
-        background_tasks.add_task(_run_hunt, hid)  # starlette threads sync tasks
-        return JSONResponse({"id": hid, "status": "running"}, status_code=201)
+        if flow == "construction":
+            step(hid, "Plan Reader", "queued")
+            background_tasks.add_task(_run_plan, hid)
+        else:
+            step(hid, "Spotter", "queued")
+            background_tasks.add_task(_run_hunt, hid)  # starlette threads sync tasks
+        return JSONResponse({"id": hid, "status": "running", "flow": flow},
+                            status_code=201)
 
     @app.get("/api/hunts")
     async def list_hunts(request: Request):
@@ -872,7 +1039,7 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
             return err
         with db.connect() as conn:
             rows = conn.execute(
-                "SELECT id, status, size_pref, budget, top_reason, tokens_in,"
+                "SELECT id, flow, status, size_pref, budget, top_reason, tokens_in,"
                 " tokens_out, cost_usd, searches_used, error, created_at"
                 " FROM hunts WHERE business_id = ? ORDER BY id DESC LIMIT 50",
                 (u["business_id"],)).fetchall()
@@ -894,10 +1061,13 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
                                  " WHERE hunt_id = ? ORDER BY id", (hunt_id,)).fetchall()
             items = conn.execute("SELECT * FROM listings WHERE hunt_id = ?",
                                  (hunt_id,)).fetchall()
+            rooms = conn.execute("SELECT * FROM hunt_items WHERE hunt_id = ?"
+                                 " ORDER BY id", (hunt_id,)).fetchall()
         d = dict(h)
         d.pop("photo_path", None)
         return {"hunt": d, "steps": [dict(s) for s in steps],
-                "listings": [dict(x) for x in items]}
+                "listings": [dict(x) for x in items],
+                "rooms": [dict(x) for x in rooms]}
 
     @app.get("/api/hunts/{hunt_id}/photo")
     async def hunt_photo(hunt_id: int, request: Request):
@@ -915,7 +1085,51 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
         p = DATA / h["photo_path"]
         if not p.is_file():
             return api_error("not_found", "no photo", 404)
-        return FileResponse(p, media_type="image/jpeg")
+        media = "application/pdf" if p.suffix == ".pdf" else "image/jpeg"
+        return FileResponse(p, media_type=media)
+
+    @app.patch("/api/hunts/{hunt_id}/rooms")
+    async def patch_rooms(hunt_id: int, request: Request):
+        """Room check: user confirms/edits the Reader's rooms. Gates the BOQ."""
+        if denied := require_api_key(request):
+            return denied
+        u, err = need_login(request)
+        if err:
+            return err
+        try:
+            body = await request.json()
+        except Exception:
+            return api_error("invalid", "bad json", 422)
+        try:
+            return confirm_rooms(hunt_id, u["business_id"],
+                                 body.get("rooms") or [])
+        except ValueError as e:
+            return api_error("invalid", str(e), 422)
+
+    @app.delete("/api/hunts/{hunt_id}", status_code=204)
+    async def delete_hunt(hunt_id: int, request: Request):
+        if denied := require_api_key(request):
+            return denied
+        u, err = need_login(request)
+        if err:
+            return err
+        with db.connect() as conn:
+            h = conn.execute("SELECT photo_path FROM hunts"
+                             " WHERE id = ? AND business_id = ?",
+                             (hunt_id, u["business_id"])).fetchone()
+            if not h:
+                return api_error("not_found", "no hunt", 404)
+            if h["photo_path"]:
+                try:
+                    (DATA / h["photo_path"]).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            for t in ("listings", "hunt_items", "hunt_steps"):
+                conn.execute(f"DELETE FROM {t} WHERE hunt_id = ?", (hunt_id,))
+            conn.execute("DELETE FROM seller_messages WHERE hunt_id = ?", (hunt_id,))
+            conn.execute("DELETE FROM hunts WHERE id = ?", (hunt_id,))
+            conn.commit()
+        return Response(status_code=204)
 
 
 # ---- selfcheck: offline, stubbed network + models ----
@@ -1037,6 +1251,74 @@ def selfcheck() -> None:
     finally:
         db.DB_PATH = old
     assert _reasoning_ok in (True, False)  # flag exists; real hunt says which
+    # Plan flow on a second temp DB, model stubbed. No network here.
+    db.DB_PATH = Path(tmp) / "p.db"
+    real_chat = chat_structured
+    plan_file = DATA / "1" / "1.pdf"
+    try:
+        db.init_db()
+        init_db()
+        fake = {"readable": True, "has_dimensions": True,
+                "rooms": [{"name": "Living", "length": 14, "width": 12,
+                           "unit": "ft", "seen_text": "14' x 12'",
+                           "confidence": "high"},
+                          {"name": "Bath", "length": None, "width": None,
+                           "unit": "", "seen_text": "", "confidence": "low"}],
+                "door_count": 2, "window_count": 3, "bathroom_count": 1}
+        globals()["chat_structured"] = lambda *a, **k: (fake, {"in": 1, "out": 1})
+        with db.connect() as conn:
+            conn.execute("INSERT INTO businesses (slug, name) VALUES ('p','P')")
+            conn.execute("INSERT INTO hunts (business_id, flow, status, photo_path)"
+                         " VALUES (1, 'construction', 'running', '1/1.pdf')")
+            conn.commit()
+        plan_file.parent.mkdir(parents=True, exist_ok=True)
+        plan_file.write_bytes(b"%PDF-1.4 fake")
+        _run_plan(1)
+        with db.connect() as conn:
+            st = conn.execute("SELECT status FROM hunts WHERE id = 1"
+                              ).fetchone()["status"]
+            assert st == "awaiting_rooms", st
+            rooms = conn.execute("SELECT name, spec FROM hunt_items WHERE hunt_id = 1"
+                                 ).fetchall()
+            assert len(rooms) == 2, len(rooms)
+        # Room check: user fills the missing Bath size; gates later BOQ.
+        r = confirm_rooms(1, 1, [{"name": "Living", "length": 14, "width": 12,
+                                  "unit": "ft"},
+                                 {"name": "Bath", "length": 7, "width": 5,
+                                  "unit": "ft"}])
+        assert r == {"rooms": 2}, r
+        with db.connect() as conn:
+            assert conn.execute("SELECT status FROM hunts WHERE id = 1"
+                                ).fetchone()["status"] == "rooms_confirmed"
+            bath = conn.execute("SELECT spec FROM hunt_items WHERE name = 'Bath'"
+                                ).fetchone()
+            assert json.loads(bath["spec"]) == {"length": 7.0, "width": 5.0,
+                                                "unit": "ft"}
+        try:
+            confirm_rooms(1, 1, [{"name": "", "length": 1, "width": 1}])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("empty rooms accepted")
+        # Unreadable plan fails the hunt with a clear message.
+        globals()["chat_structured"] = lambda *a, **k: ({"readable": False,
+                                                          "rooms": []},
+                                                         {"in": 1, "out": 1})
+        with db.connect() as conn:
+            conn.execute("INSERT INTO hunts (business_id, flow, status, photo_path)"
+                         " VALUES (1, 'construction', 'running', '1/1.pdf')")
+            conn.commit()
+        _run_plan(2)
+        with db.connect() as conn:
+            h2 = conn.execute("SELECT status, error FROM hunts WHERE id = 2").fetchone()
+            assert h2["status"] == "failed" and "unreadable" in h2["error"], dict(h2)
+    finally:
+        globals()["chat_structured"] = real_chat
+        db.DB_PATH = old
+        try:
+            plan_file.unlink(missing_ok=True)
+        except OSError:
+            pass
     print("hunt selfcheck: PASS")
 
 
@@ -1093,5 +1375,15 @@ if __name__ == "__main__":
                   f" {c.get('title', '')[:60]} {c.get('url', '')[:80]}")
         print(f"tokens {u['in']}/{u['out']} searches {n}"
               f" verified {sum(1 for c in kept if c.get('verify'))}/{len(kept)}")
+    elif len(sys.argv) > 1 and sys.argv[1] == "read-plan" and len(sys.argv) > 2:
+        from dotenv import load_dotenv
+        load_dotenv()
+        if not os.getenv("MODEL_API_KEY"):
+            print("read-plan aborted: MODEL_API_KEY missing in backend/.env")
+            sys.exit(2)
+        raw = Path(sys.argv[2]).read_bytes()
+        plan, u = read_plan(raw)
+        print(json.dumps(plan, indent=1)[:2000])
+        print(f"tokens {u['in']}/{u['out']}")
     else:
-        print("usage: python hunt.py [selfcheck|hunt]")
+        print("usage: python hunt.py [selfcheck|hunt|read-plan <file>]")
