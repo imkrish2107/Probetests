@@ -293,13 +293,12 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                 system_instruction=agent.build_prompt(biz)))
         tts = MMSTTSService(lang=first)
         context = LLMContext()
-        tool_ctx = {"business_id": business["id"], "contact_id": cid, "call_id": call_id,
-                    "verified_phone": None, "order_id": None}
+        tool_ctx = {"business_id": business["id"], "contact_id": cid, "call_id": call_id}
 
         async def _run_tool(params) -> None:
             try:
-                result = agent.run_tool(params.function_name, dict(params.arguments or {}),
-                                        tool_ctx)
+                result = await asyncio.to_thread(agent.run_tool, params.function_name,
+                                                 dict(params.arguments or {}), tool_ctx)
             except Exception as e:
                 log.warning("call %s tool %s failed: %s", call_id, params.function_name, e)
                 result = {"error": "tool_failed"}
@@ -316,7 +315,7 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                     required=t["function"]["parameters"].get("required", []),
                     handler=_run_tool,
                 )
-                for t in agent.tools_for(biz)
+                for t in agent.TOOLS
             ])
         else:
             log.warning("call %s: no FunctionSchema, tools disabled", call_id)

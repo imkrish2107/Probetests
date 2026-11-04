@@ -11,6 +11,8 @@ dist/
 .claude/settings.local.json
 setup/*_api.txt
 backups/
+backend/data/
+backend/hunt_test/
 .next/
 .netlify/
 *.log

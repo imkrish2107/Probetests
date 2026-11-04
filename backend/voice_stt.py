@@ -216,11 +216,11 @@ class MuseSTTService(STTService):
             elif kind == "progress":
                 pass  # audioProgress heartbeat; run_stt already reports volume
             elif kind == "partial" and text:
-                log.info("stt partial: %.80s", text)
+                log.info("stt partial: %d chars", len(text))
                 await self.push_frame(InterimTranscriptionFrame(
                     text, self._user_id, _now(), None, result={"text": text}))
             elif kind == "final" and text:
-                log.info("stt final: %.80s", text)
+                log.info("stt final: %d chars", len(text))
                 await self.push_frame(TranscriptionFrame(
                     text, self._user_id, _now(), None, result={"text": text}))
             elif kind == "start":
@@ -235,7 +235,7 @@ class MuseSTTService(STTService):
                 log.info("stt speech end (turn %s)", payload.get("turnId"))
                 await self.push_frame(_ProposedStop())
             elif kind == "unknown":
-                log.info("stt unknown frame: %.200s", msg.data)
+                log.info("stt unknown frame: %d bytes", len(msg.data or ""))
 
 
 def selfcheck() -> None:

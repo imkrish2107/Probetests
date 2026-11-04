@@ -1,70 +1,12 @@
-"""Outbound call plumbing (STORE_BUILD Phase 1): limits, Graph helpers, webhook hook.
+"""WhatsApp sends for the agents dashboard: Graph helpers only.
 
-Limits are enforced in code, not just docs: 1 permission request per
-24h, 2 per 7 days, and never place the 4th call after 3 unanswered in a
-row. Real network only happens in outbound_test.py and the live webhook.
+Safety: sellers are messaged only after a logged-in user clicks, with an
+opted-in seller from our database. This module never decides recipients.
 """
-import datetime as dt
 import json
 import os
-import tempfile
-
-import db
 
 GRAPH = "https://graph.facebook.com/v21.0"
-
-OUTBOUND_TABLE = """CREATE TABLE IF NOT EXISTS outbound_log (
-  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, call_id TEXT DEFAULT '',
-  phone TEXT DEFAULT '', at TEXT DEFAULT (datetime('now')))"""
-
-
-def ensure_table() -> None:
-    with db.connect() as conn:
-        conn.execute(OUTBOUND_TABLE)
-        cols = [r["name"] for r in conn.execute("PRAGMA table_info(outbound_log)").fetchall()]
-        if "phone" not in cols:  # databases created before per-phone limits
-            conn.execute("ALTER TABLE outbound_log ADD COLUMN phone TEXT DEFAULT ''")
-        conn.commit()
-
-
-def utc_sqlite(hours_ago: float = 0) -> str:
-    """UTC as 'YYYY-MM-DD HH:MM:SS': string-comparable with SQLite datetime('now').
-
-    Never compare Python isoformat() text against SQLite timestamps: the space
-    sorts before isoformat's 'T', so every window check silently breaks.
-    """
-    return (dt.datetime.now(dt.timezone.utc)
-            - dt.timedelta(hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def log(kind: str, call_id: str = "", phone: str = "") -> None:
-    """kinds: request | connect_placed | connected | unanswered."""
-    ensure_table()
-    with db.connect() as conn:
-        conn.execute("INSERT INTO outbound_log (kind, call_id, phone) VALUES (?, ?, ?)",
-                     (kind, call_id or "", phone or ""))
-        conn.commit()
-
-
-def limits_ok(phone: str = "") -> tuple[bool, str]:
-    day = utc_sqlite(24)
-    week = utc_sqlite(7 * 24)
-    with db.connect() as conn:
-        rows = conn.execute("SELECT kind, at FROM outbound_log WHERE phone = ? ORDER BY id",
-                            (phone,)).fetchall()
-    if sum(1 for k, at in rows if k == "request" and at > day) >= 1:
-        return False, "permission already requested in the last 24h"
-    if sum(1 for k, at in rows if k == "request" and at > week) >= 2:
-        return False, "2 permission requests already sent in the last 7 days"
-    streak = 0
-    for k, _at in reversed(rows):
-        if k == "connected":
-            break
-        if k == "unanswered":
-            streak += 1
-    if streak >= 3:
-        return False, f"{streak} unanswered calls in a row, stopping before a 4th"
-    return True, ""
 
 
 def creds() -> tuple[str, str]:
@@ -97,68 +39,22 @@ def _call(method: str, path: str, token: str, **kw) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def permission_status(to: str) -> dict:
-    token, pnid = creds()
-    return _call("GET", f"{pnid}/call_permissions", token, params={"user_wa_id": to})
-
-
-def request_permission(to: str, text: str) -> dict:
-    """Free-form request; needs the owner to have messaged the number in the
-    last 24h (open service window). Outside it, Meta rejects and the owner
-    must message the business number first, then rerun."""
-    token, pnid = creds()
-    data = _call("POST", f"{pnid}/messages", token, json={
-        "messaging_product": "whatsapp", "recipient_type": "individual", "to": to,
-        "type": "interactive",
-        "interactive": {"type": "call_permission_request",
-                        "action": {"name": "call_permission_request"},
-                        "body": {"text": text}}})
-    log("request", phone=to)
-    return data
-
-
-def place_call(to: str, sdp_offer: str) -> str:
-    token, pnid = creds()
-    try:
-        data = _call("POST", f"{pnid}/calls", token, json={
-            "messaging_product": "whatsapp", "to": to, "action": "connect",
-            "session": {"sdp_type": "offer", "sdp": sdp_offer},
-            "biz_opaque_callback_data": "escape-outbound-test"})
-    except GraphError as e:
-        if "138006" in e.body:
-            raise GraphError(e.status, e.body + " (no call permission: request it first, "
-                             "approve on the phone, then rerun)") from e
-        raise
-    call_id = ((data.get("calls") or [{}])[0].get("id", ""))
-    log("connect_placed", call_id, to)
-    return call_id
-
-
-def terminate_call(call_id: str) -> dict:
-    token, pnid = creds()
-    return _call("POST", f"{pnid}/calls", token, json={
-        "messaging_product": "whatsapp", "call_id": call_id, "action": "terminate"})
-
-
-def otp_template_payload(to: str, code: str) -> dict:
-    """Pure payload for the approved `otp_code` AUTHENTICATION template."""
+def template_payload(to: str, name: str, lang: str, params: list[str]) -> dict:
+    """Pure approved-template payload. Params are database values only."""
     return {
         "messaging_product": "whatsapp", "recipient_type": "individual",
         "to": to, "type": "template",
-        "template": {"name": "otp_code", "language": {"code": "en"},
-            "components": [
-                {"type": "body",
-                 "parameters": [{"type": "text", "text": code}]},
-                {"type": "button", "sub_type": "url", "index": "0",
-                 "parameters": [{"type": "text", "text": code}]}]}}
+        "template": {"name": name, "language": {"code": lang},
+                     "components": [{"type": "body", "parameters": [
+                         {"type": "text", "text": p} for p in params]}]}}
 
 
-def send_otp_template(to: str, code: str) -> dict:
-    """Approved-template OTP send; works outside the 24h window. Raises
-    GraphError when the template is missing or unapproved, and the caller
-    falls back to free-form text."""
+def send_template(to: str, name: str, lang: str, params: list[str]) -> dict:
+    """Send an approved UTILITY template. Raises GraphError when the template
+    is missing or unapproved; the caller decides the fallback."""
     token, pnid = creds()
-    return _call("POST", f"{pnid}/messages", token, json=otp_template_payload(to, code))
+    return _call("POST", f"{pnid}/messages", token,
+                 json=template_payload(to, name, lang, params))
 
 
 def send_text(to: str, text: str) -> dict:
@@ -169,106 +65,14 @@ def send_text(to: str, text: str) -> dict:
         "to": to, "type": "text", "text": {"body": text}})
 
 
-def send_buttons(to: str, body: str, buttons: list[tuple[str, str]]) -> dict:
-    """Up to 3 quick-reply buttons. Free-form; needs the open window."""
-    token, pnid = creds()
-    return _call("POST", f"{pnid}/messages", token, json={
-        "messaging_product": "whatsapp", "recipient_type": "individual",
-        "to": to, "type": "interactive",
-        "interactive": {"type": "button", "body": {"text": body},
-                        "action": {"buttons": [
-                            {"type": "reply", "reply": {"id": i, "title": t}}
-                            for i, t in buttons[:3]]}}})
-    return item.get("direction") == "BUSINESS_INITIATED"
-
-
-def is_outbound(item: dict) -> bool:
-    return item.get("direction") == "BUSINESS_INITIATED"
-
-
-def answer_path(call_id: str) -> str:
-    safe = "".join(c for c in call_id if c.isalnum() or c in ".-_")[:80]
-    return os.path.join(tempfile.gettempdir(), f"outbound_answer_{safe}.json")
-
-
-def handle_outbound_item(item: dict, logger=None) -> None:
-    """Webhook side: stash the SDP answer for outbound_test.py; score the
-    terminate event into the unanswered streak. Never raises."""
-    try:
-        event = item.get("event")
-        if event == "connect":
-            sess = item.get("session") or {}
-            if sess.get("sdp"):
-                with open(answer_path(item.get("id", "")), "w") as f:
-                    json.dump({"sdp_type": sess.get("sdp_type", "answer"),
-                               "sdp": sess["sdp"]}, f)
-        elif event == "terminate":
-            log("connected" if item.get("duration") else "unanswered",
-                item.get("id", ""), item.get("to", "") or "")
-        elif logger:
-            logger.info("outbound call event: %s", json.dumps(item)[:200])
-    except Exception as e:
-        if logger:
-            logger.warning("outbound hook failed: %s", e)
-
-
 def selfcheck() -> None:
-    """Offline: limit gates against a temp DB. No network, no keys."""
-    import tempfile as _tf
-    tmp = _tf.mkdtemp()
-    db.DB_PATH = db.Path(tmp) / "t.db"
-    ensure_table()
-    ok, _ = limits_ok()
-    assert ok, "empty log must pass"
-    log("request")
-    ok, reason = limits_ok()
-    assert not ok and "24h" in reason, reason  # 1 request per 24h
-    with db.connect() as conn:  # age it out, keep the 7-day window
-        conn.execute("UPDATE outbound_log SET at = datetime('now', '-2 days')")
-        conn.commit()
-    ok, reason = limits_ok()
-    assert ok, f"one request 2 days ago must pass: {reason}"
-    log("request")
-    with db.connect() as conn:  # two requests inside 7 days, none inside 24h
-        conn.execute("UPDATE outbound_log SET at = datetime('now', '-2 days')")
-        conn.commit()
-    ok, reason = limits_ok()
-    assert not ok and "7 days" in reason, reason  # 2 requests per 7 days
-    with db.connect() as conn:
-        conn.execute("DELETE FROM outbound_log")
-        conn.commit()
-    log("request")
-    with db.connect() as conn:
-        conn.execute("UPDATE outbound_log SET at = datetime('now', '-20 hours')")
-        conn.commit()
-    ok, reason = limits_ok()
-    assert not ok and "24h" in reason, reason  # a request 20h old still blocks
-    with db.connect() as conn:
-        conn.execute("DELETE FROM outbound_log")
-        conn.commit()
-    log("unanswered")
-    log("unanswered")
-    ok, _ = limits_ok()
-    assert ok, "2 in a row still allowed"
-    log("unanswered")
-    ok, reason = limits_ok()
-    assert not ok and "in a row" in reason, reason  # stop before the 4th
-    log("connected")
-    ok, _ = limits_ok()
-    assert ok, "an answered call resets the streak"
-    with db.connect() as conn:
-        conn.execute("DELETE FROM outbound_log")
-        conn.commit()
-    log("unanswered", phone="+911111111111")
-    log("unanswered", phone="+911111111111")
-    log("unanswered", phone="+911111111111")
-    ok, _ = limits_ok("+911111111111")
-    assert not ok, "3 unanswered to one number blocks that number"
-    ok, _ = limits_ok("+912222222222")
-    assert ok, "limits apply per phone, not globally"
-    p = otp_template_payload("+911234567890", "123456")
-    assert p["template"]["name"] == "otp_code"
-    assert p["template"]["components"][0]["parameters"][0]["text"] == "123456"
+    """Offline: template payload shape only. Never touches the network."""
+    p = template_payload("+911234567890", "stock_check", "en",
+                         ["Meera", "Escape Oversized Tee", "M"])
+    t = p["template"]
+    assert t["name"] == "stock_check" and t["language"] == {"code": "en"}
+    assert [x["text"] for x in t["components"][0]["parameters"]] == [
+        "Meera", "Escape Oversized Tee", "M"]
     print("outbound selfcheck: PASS")
 
 

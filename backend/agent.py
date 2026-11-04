@@ -34,8 +34,6 @@ def _biz(business_id: int) -> dict:
 
 def build_prompt(biz: dict) -> str:
     """Fixed per call (byte-stable so the prefix caches); date goes in the suffix."""
-    if biz.get("slug") == "escape":
-        return build_support_prompt(biz)
     langs = biz.get("languages") or ["English"]
     menu = "\n".join(
         f"- {m.get('name')}: {m.get('price')}"
@@ -233,147 +231,6 @@ def end_call(ctx: dict, reason: str = "") -> dict:
     return {"ended": True, "reason": reason}
 
 
-# ---- ESCAPE store: confirmation tools use the call's order, never another ID ----
-
-def _call_order(ctx: dict) -> dict:
-    import store
-    return store.get_order(ctx["business_id"], ctx.get("order_id") or 0) or {}
-
-
-def get_order_for_call(ctx: dict) -> dict:
-    o = _call_order(ctx)
-    if not o:
-        return {"error": "no_order"}
-    items = ", ".join(f"{i['qty']}x {i['name']} ({i['size']})" for i in o["items"])
-    return {"id": o["id"], "items": items, "total": o["items_total_paise"],
-            "name": o["name"], "address": o["address"], "status": o["status"]}
-
-
-def _order_act(ctx: dict, action: str, note: str = "") -> dict:
-    import store
-    o = _call_order(ctx)
-    if not o:
-        return {"error": "no_order"}
-    return store.order_action(ctx["business_id"], o["id"], o["phone"], action, note)
-
-
-def confirm_order(ctx: dict) -> dict:
-    return _order_act(ctx, "confirmed")
-
-
-def request_change(ctx: dict, note: str = "") -> dict:
-    return _order_act(ctx, "change_requested", note)
-
-
-def cancel_order(ctx: dict, order_id: int = 0, reason: str = "") -> dict:
-    """Confirmation call: no id, cancels the call's order. Support call: id plus
-    verified same-phone, before shipping only. Unverified callers get
-    not_verified so no order data leaks."""
-    if order_id:
-        import store
-        o = _support_order(ctx, order_id)
-        if not o:
-            return {"error": "not_verified" if not ctx.get("verified_phone") else "not_found"}
-        if o["status"] not in store.PRE_SHIP:
-            return {"error": "too_late", "status": o["status"]}
-        return store.order_action(ctx["business_id"], o["id"], o["phone"], "cancelled", reason)
-    return _order_act(ctx, "cancelled", reason)
-
-
-def send_otp(ctx: dict, phone: str) -> dict:
-    """Send the login code to the order phone. Same reply either way."""
-    import store
-    return store.request_otp(ctx["business_id"], phone)
-
-
-def verify_otp(ctx: dict, phone: str, code: str) -> dict:
-    import store
-    ok, reason = store.verify_otp(ctx["business_id"], phone, code)
-    if ok:
-        ctx["verified_phone"] = phone  # dict persists for the rest of the call
-        return {"verified": True}
-    return {"verified": False, "reason": reason}
-
-
-def _support_order(ctx: dict, order_id: int) -> dict:
-    import store
-    phone = ctx.get("verified_phone") or ""
-    if not phone:
-        return {}
-    o = store.get_order(ctx["business_id"], order_id)
-    if not o or not store.same_phone(o["phone"], phone):
-        return {}
-    return o
-
-
-def get_order_status(ctx: dict, order_id: int = 0) -> dict:
-    import store
-    phone = ctx.get("verified_phone") or ""
-    if not phone:
-        return {"error": "not_verified"}
-    if order_id:
-        o = _support_order(ctx, order_id)
-        return {"id": o["id"], "status": o["status"],
-                "total": o["items_total_paise"]} if o else {"error": "not_found"}
-    out = []
-    for o in store.orders_for_phone(ctx["business_id"], phone):
-        items = ", ".join(f"{i['qty']}x {i['name']}" for i in
-                          store.get_order(ctx["business_id"], o["id"])["items"])
-        out.append({"id": o["id"], "status": o["status"],
-                    "total": o["items_total_paise"], "items": items})
-    return {"orders": out}
-
-
-def request_address_change(ctx: dict, order_id: int, address: str) -> dict:
-    import store
-    o = _support_order(ctx, order_id)
-    if not o:
-        return {"error": "not_verified" if not ctx.get("verified_phone") else "not_found"}
-    if o["status"] not in store.PRE_SHIP:
-        return {"error": "too_late", "status": o["status"]}
-    address = (address or "").strip()
-    if len(address) < 8:
-        return {"error": "bad_address"}
-    with db.connect() as conn:
-        conn.execute("UPDATE orders SET address = ?, updated_at = datetime('now') WHERE id = ?",
-                     (address, order_id))
-        conn.commit()
-    return {"id": order_id, "status": o["status"], "address": address}
-
-
-def create_return_request(ctx: dict, order_id: int, reason: str = "") -> dict:
-    o = _support_order(ctx, order_id)
-    if not o:
-        return {"error": "not_verified" if not ctx.get("verified_phone") else "not_found"}
-    return create_task(ctx, "other", f"RETURN order {order_id}: {reason or 'no reason given'}")
-
-
-def request_human_callback(ctx: dict, reason: str = "") -> dict:
-    return request_callback(ctx, reason)
-
-
-def build_support_prompt(biz: dict) -> str:
-    langs = biz.get("languages") or ["English"]
-    return f"""You are {biz.get('name')}'s AI assistant on a WhatsApp voice call. Say so in your greeting.
-Speak {langs[0]} first. Reply only in the language the caller last spoke, native script.
-Ask for the phone number on their order. Read back its last 4 digits, then call send_otp.
-Say the same line whether or not it exists: "If that number has an order, I've sent a code."
-When verify_otp returns verified, ask for their query. Tools work only after verification:
-get_order_status, request_address_change (before shipping only), cancel_order (before shipping
-only), create_return_request, request_human_callback. Refunds always become a human task.
-Never reveal order details before verification. Keep every reply to 1-2 short sentences
-(under 40 words); this is a voice call, not chat. Use end_call when done."""
-
-
-def build_confirm_prompt(biz: dict, order: dict) -> str:
-    items = ", ".join(f"{i['qty']}x {i['name']} ({i['size']})" for i in order.get("items", []))
-    return (f"You are {biz.get('name')}'s AI assistant confirming order #{order['id']} on a WhatsApp call. Say so."
-            f" Check you are speaking to {order['name']}. Items: {items}."
-            f" Total {order['items_total_paise'] // 100} rupees, cash on delivery."
-            f" Address: {order['address']}. Use get_order_for_call, then confirm_order,"
-            " request_change or cancel_order, then end_call. 1-2 short sentences per reply.")
-
-
 TOOLS = [
     {"type": "function", "function": {"name": "check_slots", "description": "Free table slots (ISO with offset) for a day.",
      "parameters": {"type": "object", "properties": {"date": {"type": "string"}, "party_size": {"type": "integer"}}, "required": ["date", "party_size"]}}},
@@ -396,50 +253,7 @@ TOOLS = [
 _FUNCS = {"check_slots": check_slots, "book_table": book_table,
           "reschedule_booking": reschedule_booking, "cancel_booking": cancel_booking,
           "take_message": take_message, "request_callback": request_callback,
-          "create_task": create_task, "end_call": end_call,
-          "get_order_for_call": get_order_for_call, "confirm_order": confirm_order,
-          "request_change": request_change, "cancel_order": cancel_order,
-          "send_otp": send_otp, "verify_otp": verify_otp,
-          "get_order_status": get_order_status,
-          "request_address_change": request_address_change,
-          "create_return_request": create_return_request,
-          "request_human_callback": request_human_callback}
-
-
-def _schema(name: str, desc: str, props: dict, req: list) -> dict:
-    return {"type": "function", "function": {"name": name, "description": desc,
-            "parameters": {"type": "object", "properties": props, "required": req}}}
-
-
-STORE_TOOLS = [
-    _schema("get_order_for_call", "Read the call's order: items, total, address.",
-            {}, []),
-    _schema("confirm_order", "Confirm the call's order.", {}, []),
-    _schema("request_change", "Mark change requested with a note.",
-            {"note": {"type": "string"}}, []),
-    _schema("cancel_order", "Cancel the call's order, or a verified order id before shipping.",
-            {"order_id": {"type": "integer"}, "reason": {"type": "string"}}, []),
-    _schema("send_otp", "Text a login code to the order phone.",
-            {"phone": {"type": "string"}}, ["phone"]),
-    _schema("verify_otp", "Check the spoken code. Sets verification on success.",
-            {"phone": {"type": "string"}, "code": {"type": "string"}}, ["phone", "code"]),
-    _schema("get_order_status", "Orders for the verified phone; optional one order.",
-            {"order_id": {"type": "integer"}}, []),
-    _schema("request_address_change", "New address, before shipping only.",
-            {"order_id": {"type": "integer"}, "address": {"type": "string"}},
-            ["order_id", "address"]),
-    _schema("create_return_request", "Return request becomes a human task.",
-            {"order_id": {"type": "integer"}, "reason": {"type": "string"}},
-            ["order_id"]),
-    _schema("request_human_callback", "Caller wants a person; urgent callback task.",
-            {"reason": {"type": "string"}}, []),
-    [t for t in TOOLS if t["function"]["name"] == "end_call"][0],
-]
-
-
-def tools_for(biz: dict) -> list[dict]:
-    """ESCAPE calls get store tools; every other business keeps cafe tools."""
-    return STORE_TOOLS if biz.get("slug") == "escape" else TOOLS
+          "create_task": create_task, "end_call": end_call}
 
 
 def run_tool(name: str, args: dict, ctx: dict) -> dict:
@@ -491,31 +305,6 @@ def selfcheck() -> None:
     assert t["urgency"] == "urgent", t  # forced
     assert create_task(ctx, "bogus", "x")["error"] == "bad_type"
     assert run_tool("nope", {}, ctx)["error"] == "unknown_tool"
-    import store
-    store.ensure_tables()
-    assert tools_for({"slug": "escape"}) is STORE_TOOLS
-    assert tools_for({"slug": "cafe"}) is TOOLS
-    assert run_tool("get_order_status", {}, {"business_id": 1})["error"] == "not_verified"
-    assert run_tool("verify_otp", {"phone": "+911234567890", "code": "000000"},
-                    {"business_id": 1}) == {"verified": False, "reason": "no_code"}
-    assert run_tool("get_order_for_call", {},
-                    {"business_id": 1, "order_id": 0})["error"] == "no_order"
-    assert run_tool("cancel_order", {"order_id": 1},
-                    {"business_id": 1})["error"] == "not_verified"
-    with db.connect() as conn:
-        conn.execute("INSERT INTO businesses (slug, name) VALUES ('escape','ESCAPE')")
-        conn.execute("INSERT INTO products (business_id, slug, name, price_paise)"
-                     " VALUES (2,'tee','Tee',99900)")
-        conn.commit()
-    so = store.create_order("escape", [{"product_id": 1, "qty": 1}], "Sam", "+916666666666",
-                            "5 Sea Rd, Kochi", True)
-    vctx = {"business_id": 2, "verified_phone": "+916666666666"}
-    assert run_tool("cancel_order", {"order_id": so["id"]}, vctx)["status"] == "cancelled"
-    with db.connect() as conn:
-        conn.execute("UPDATE orders SET status = 'shipped' WHERE id = ?", (so["id"],))
-        conn.commit()
-    r = run_tool("cancel_order", {"order_id": so["id"]}, vctx)
-    assert r["error"] == "too_late" and r["status"] == "shipped", r
     assert end_call(ctx)["ended"] is True
     print("agent selfcheck: PASS")
 
