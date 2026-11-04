@@ -13,6 +13,8 @@ import call_bot
 import db
 import hunt
 import httpx
+import re
+import sellers
 from argon2.exceptions import HashingError
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, Query, Request, Response
@@ -27,6 +29,7 @@ log = logging.getLogger("uvicorn.error")
 async def lifespan(app: FastAPI):
     db.init_db()
     hunt.init_db()
+    sellers.init_db()
     hunt.fail_stale()
 
     async def loop():
@@ -259,6 +262,12 @@ def _handle_inbound(business_id: int, item: dict) -> None:
     wa_id = item.get("from", "")
     if not wa_id:
         return
+    # Vendor traffic never gets the Call Now auto-reply, never becomes a contact.
+    kind, text = sellers.inbound_text(item)
+    if sellers.is_known_seller(business_id, wa_id) \
+            or re.fullmatch(r"QUOTE\s+[A-Z0-9]{6}", text.strip().upper()):
+        sellers.handle_seller_message(business_id, item)
+        return
     cid = _ensure_contact(business_id, wa_id, "")
     import datetime as dt
     day_ago = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)).isoformat()
@@ -276,6 +285,8 @@ def _handle_inbound(business_id: int, item: dict) -> None:
 
 hunt.routes(app, require_api_key=require_api_key,
             need_login=need_login, api_error=api_error)
+sellers.routes(app, require_api_key=require_api_key,
+               need_login=need_login, api_error=api_error)
 
 
 @app.post("/api/auth/signup", status_code=201)

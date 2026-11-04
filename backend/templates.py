@@ -48,6 +48,10 @@ TEMPLATES: dict[str, dict] = {
         "en": "Hello {{1}}, please confirm this order for {{2}}, size {{3}}, at {{4}}. Deliver by {{5}} to {{6}}, {{7}}, phone {{8}}. Payment is {{9}} directly to you. Please reply to confirm."}},
     "tracking_request": {"langs": ["en"], "button": None, "body": {
         "en": "Hello {{1}}, could you share the courier and tracking number for order {{2}}? Thank you."}},
+    "quote_request": {"langs": ["en"], "buttons": ["Can't supply"], "body": {
+        "en": "Hello {{1}}, we are collecting quotes for {{2}}, quantity {{3}}, delivery to {{4}}. Please reply with your price per unit, delivery time and minimum order. Thank you."}},
+    "call_permission": {"langs": ["en"], "button": None, "body": {
+        "en": "Hello {{1}}, may our AI assistant call you about a quote for {{2}}? You can say no at any time."}},
 }
 
 LANGS = ["en", "hi", "ta"]
@@ -112,13 +116,14 @@ def status() -> None:
 def selfcheck() -> None:
     """Offline: every template has its languages, sequential {{n}} placeholders."""
     import re
-    assert len(TEMPLATES) == 12, len(TEMPLATES)
+    assert len(TEMPLATES) == 14, len(TEMPLATES)
     for name, t in TEMPLATES.items():
         langs = t.get("langs", ["en"] if t.get("category") == "AUTHENTICATION" else LANGS)
         for lang in langs:
             body = t["body"].get(lang)
             assert body, f"{name} missing {lang}"
-            if name in ("stock_check", "order_request", "tracking_request"):
+            if name in ("stock_check", "order_request", "tracking_request",
+                      "quote_request", "call_permission"):
                 # new submissions only: old approved bodies stay untouched
                 assert not body.startswith("{{") and not body.endswith("}}"), name
             nums = [int(n) for n in re.findall(r"\{\{(\d+)\}\}", body)]
