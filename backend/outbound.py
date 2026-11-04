@@ -15,12 +15,15 @@ GRAPH = "https://graph.facebook.com/v21.0"
 
 OUTBOUND_TABLE = """CREATE TABLE IF NOT EXISTS outbound_log (
   id INTEGER PRIMARY KEY, kind TEXT NOT NULL, call_id TEXT DEFAULT '',
-  at TEXT DEFAULT (datetime('now')))"""
+  phone TEXT DEFAULT '', at TEXT DEFAULT (datetime('now')))"""
 
 
 def ensure_table() -> None:
     with db.connect() as conn:
         conn.execute(OUTBOUND_TABLE)
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(outbound_log)").fetchall()]
+        if "phone" not in cols:  # databases created before per-phone limits
+            conn.execute("ALTER TABLE outbound_log ADD COLUMN phone TEXT DEFAULT ''")
         conn.commit()
 
 
@@ -34,20 +37,21 @@ def utc_sqlite(hours_ago: float = 0) -> str:
             - dt.timedelta(hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def log(kind: str, call_id: str = "") -> None:
+def log(kind: str, call_id: str = "", phone: str = "") -> None:
     """kinds: request | connect_placed | connected | unanswered."""
     ensure_table()
     with db.connect() as conn:
-        conn.execute("INSERT INTO outbound_log (kind, call_id) VALUES (?, ?)",
-                     (kind, call_id or ""))
+        conn.execute("INSERT INTO outbound_log (kind, call_id, phone) VALUES (?, ?, ?)",
+                     (kind, call_id or "", phone or ""))
         conn.commit()
 
 
-def limits_ok() -> tuple[bool, str]:
+def limits_ok(phone: str = "") -> tuple[bool, str]:
     day = utc_sqlite(24)
     week = utc_sqlite(7 * 24)
     with db.connect() as conn:
-        rows = conn.execute("SELECT kind, at FROM outbound_log ORDER BY id").fetchall()
+        rows = conn.execute("SELECT kind, at FROM outbound_log WHERE phone = ? ORDER BY id",
+                            (phone,)).fetchall()
     if sum(1 for k, at in rows if k == "request" and at > day) >= 1:
         return False, "permission already requested in the last 24h"
     if sum(1 for k, at in rows if k == "request" and at > week) >= 2:
@@ -109,7 +113,7 @@ def request_permission(to: str, text: str) -> dict:
         "interactive": {"type": "call_permission_request",
                         "action": {"name": "call_permission_request"},
                         "body": {"text": text}}})
-    log("request")
+    log("request", phone=to)
     return data
 
 
@@ -126,7 +130,7 @@ def place_call(to: str, sdp_offer: str) -> str:
                              "approve on the phone, then rerun)") from e
         raise
     call_id = ((data.get("calls") or [{}])[0].get("id", ""))
-    log("connect_placed", call_id)
+    log("connect_placed", call_id, to)
     return call_id
 
 
@@ -178,7 +182,8 @@ def handle_outbound_item(item: dict, logger=None) -> None:
                     json.dump({"sdp_type": sess.get("sdp_type", "answer"),
                                "sdp": sess["sdp"]}, f)
         elif event == "terminate":
-            log("connected" if item.get("duration") else "unanswered", item.get("id", ""))
+            log("connected" if item.get("duration") else "unanswered",
+                item.get("id", ""), item.get("to", "") or "")
         elif logger:
             logger.info("outbound call event: %s", json.dumps(item)[:200])
     except Exception as e:
@@ -230,6 +235,16 @@ def selfcheck() -> None:
     log("connected")
     ok, _ = limits_ok()
     assert ok, "an answered call resets the streak"
+    with db.connect() as conn:
+        conn.execute("DELETE FROM outbound_log")
+        conn.commit()
+    log("unanswered", phone="+911111111111")
+    log("unanswered", phone="+911111111111")
+    log("unanswered", phone="+911111111111")
+    ok, _ = limits_ok("+911111111111")
+    assert not ok, "3 unanswered to one number blocks that number"
+    ok, _ = limits_ok("+912222222222")
+    assert ok, "limits apply per phone, not globally"
     print("outbound selfcheck: PASS")
 
 

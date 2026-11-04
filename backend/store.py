@@ -243,7 +243,7 @@ def handle_order_link(business_id: int, sender_wa: str, text: str) -> str | None
     try:
         perm = outbound.permission_status("+" + digits(o["phone"]))
         if (perm.get("permission") or {}).get("status") not in ("temporary", "permanent"):
-            ok, _ = outbound.limits_ok()
+            ok, _ = outbound.limits_ok("+" + digits(o["phone"]))
             if ok:
                 outbound.request_permission(
                     "+" + digits(o["phone"]),

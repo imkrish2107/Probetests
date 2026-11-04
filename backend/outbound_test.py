@@ -48,7 +48,7 @@ async def main(to: str, text: str) -> int:
     status = (perm.get("permission") or {}).get("status", "")
     print("permission:", status or perm)
     if status not in ("temporary", "permanent"):
-        ok, reason = outbound.limits_ok()
+        ok, reason = outbound.limits_ok(to)
         if not ok:
             print("BLOCKED:", reason)
             return 2
