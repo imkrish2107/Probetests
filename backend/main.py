@@ -11,6 +11,7 @@ import auth
 import automation
 import call_bot
 import db
+import hunt
 import httpx
 from argon2.exceptions import HashingError
 from dotenv import load_dotenv
@@ -25,6 +26,8 @@ log = logging.getLogger("uvicorn.error")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    hunt.init_db()
+    hunt.fail_stale()
 
     async def loop():
         while True:
@@ -270,6 +273,9 @@ def _handle_inbound(business_id: int, item: dict) -> None:
 
 
 # ---- Dashboard API (login required below) ----
+
+hunt.routes(app, require_api_key=require_api_key,
+            need_login=need_login, api_error=api_error)
 
 
 @app.post("/api/auth/signup", status_code=201)
