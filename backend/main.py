@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import auth
 import automation
+import boq
 import call_bot
 import db
 import hunt
@@ -287,6 +288,8 @@ hunt.routes(app, require_api_key=require_api_key,
             need_login=need_login, api_error=api_error)
 sellers.routes(app, require_api_key=require_api_key,
                need_login=need_login, api_error=api_error)
+boq.routes(app, require_api_key=require_api_key,
+           need_login=need_login, api_error=api_error)
 
 
 @app.post("/api/auth/signup", status_code=201)
