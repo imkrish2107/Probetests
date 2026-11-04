@@ -1,0 +1,21 @@
+# /etc/systemd/system/wa-dashboard.service
+# Dashboard (Next.js) on 127.0.0.1:3000; nginx proxies the dashboard host to it.
+# BACKEND_API_KEY comes from the backend .env (never committed); BACKEND_URL
+# below is not a secret. Rebuild after every pull: npm install && npm run build.
+# Install: cp deploy/wa-dashboard.service /etc/systemd/system/ &&
+#          systemctl daemon-reload && systemctl enable --now wa-dashboard
+[Unit]
+Description=Agent dashboard (Next.js)
+After=network.target wa-backend.service
+
+[Service]
+User=wa
+WorkingDirectory=/home/wa/Probetests/dashboard
+Environment=BACKEND_URL=http://127.0.0.1:8000
+EnvironmentFile=/home/wa/Probetests/backend/.env
+ExecStart=npm start -- --port 3000 --hostname 127.0.0.1
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

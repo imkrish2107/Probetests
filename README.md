@@ -42,10 +42,14 @@ cd backend && .venv/bin/pip install -r requirements.txt
 .venv/bin/python purchases.py selfcheck && .venv/bin/python sellers.py selfcheck
 ```
 
-Dashboard (Next.js, ledger styling, no tokens in HTML):
+Dashboard (Next.js, ledger styling, no tokens in HTML). It talks to the
+backend, so it needs `BACKEND_URL` and `BACKEND_API_KEY` in its environment
+(`BACKEND_API_KEY` is the same key the backend checks; both live only in
+`backend/.env`, never in the repo):
 
 ```bash
 cd dashboard && npm install && npm run build && npm start
+./smoke_test.sh   # builds, boots a fake backend, every page must 200
 ```
 
 Keys come only from `backend/.env` (never committed, never printed — checks
@@ -56,7 +60,9 @@ print only which names are empty).
 ```bash
 cd /home/wa/Probetests && git pull
 cd backend && .venv/bin/python purchases.py selfcheck && .venv/bin/python sellers.py selfcheck
-systemctl restart wa-backend && systemctl is-active wa-backend
+cd ../dashboard && npm install && npm run build
+systemctl restart wa-backend wa-dashboard
+systemctl is-active wa-backend wa-dashboard
 ```
 
 ## Status
