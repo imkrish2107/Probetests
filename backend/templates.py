@@ -39,6 +39,10 @@ TEMPLATES: dict[str, dict] = {
         "en": "New call at {{1}}: {{2}}",
         "hi": "नई कॉल ({{1}}): {{2}}",
         "ta": "புதிய அழைப்பு ({{1}}): {{2}}"}},
+    "otp_code": {"button": "Copy code", "category": "AUTHENTICATION", "body": {
+        # en only: Meta owns authentication-template wording; approval takes
+        # up to 24h, then `status` shows APPROVED and OTPs leave the 24h window.
+        "en": "{{1}} is your ESCAPE verification code. It expires in 5 minutes. Never share it."}},
 }
 
 LANGS = ["en", "hi", "ta"]
@@ -63,14 +67,24 @@ def create() -> None:
     """Submit all templates in every language (approval takes up to 24h)."""
     httpx, token, waba = _graph()
     for name, t in TEMPLATES.items():
-        for lang in LANGS:
-            components: list = [{"type": "BODY", "text": render(name, lang)}]
-            if t["button"]:  # voice_call button; confirm exact type at submit time
-                components.append({"type": "BUTTONS", "buttons": [
-                    {"type": "VOICE_CALL", "text": t["button"]}]})
+        langs = ["en"] if t.get("category") == "AUTHENTICATION" else LANGS
+        for lang in langs:
+            if t.get("category") == "AUTHENTICATION":
+                components: list = [
+                    {"type": "BODY", "add_security_recommendation": True},
+                    {"type": "FOOTER", "code_expiration_minutes": 5},
+                    {"type": "BUTTONS", "buttons": [
+                        {"type": "OTP", "otp_type": "COPY_CODE", "text": t["button"]}]}]
+                category = "AUTHENTICATION"
+            else:
+                components = [{"type": "BODY", "text": render(name, lang)}]
+                if t["button"]:  # voice_call button; confirm exact type at submit time
+                    components.append({"type": "BUTTONS", "buttons": [
+                        {"type": "VOICE_CALL", "text": t["button"]}]})
+                category = "UTILITY"
             r = httpx.post(f"https://graph.facebook.com/v21.0/{waba}/message_templates",
                            headers={"Authorization": f"Bearer {token}"},
-                           json={"name": name, "category": "UTILITY", "language": lang,
+                           json={"name": name, "category": category, "language": lang,
                                  "components": components}, timeout=20)
             print(name, lang, r.status_code, r.text[:200])
 
@@ -87,13 +101,15 @@ def status() -> None:
 def selfcheck() -> None:
     """Offline: every template has en/hi/ta with sequential {{n}} placeholders."""
     import re
-    assert len(TEMPLATES) == 8, len(TEMPLATES)
+    assert len(TEMPLATES) == 9, len(TEMPLATES)
     for name, t in TEMPLATES.items():
-        for lang in LANGS:
+        langs = ["en"] if t.get("category") == "AUTHENTICATION" else LANGS
+        for lang in langs:
             body = t["body"].get(lang)
             assert body, f"{name} missing {lang}"
             nums = [int(n) for n in re.findall(r"\{\{(\d+)\}\}", body)]
-            assert nums == list(range(1, len(nums) + 1)), f"{name}/{lang}: {nums}"
+            # set check, not order: hi/ta word order differs from en
+            assert sorted(nums) == list(range(1, len(nums) + 1)), f"{name}/{lang}: {nums}"
     print("templates selfcheck: PASS")
 
 

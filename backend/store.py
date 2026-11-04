@@ -309,8 +309,11 @@ def request_otp(business_id: int, phone: str) -> dict:
                      (business_id, digits(phone), auth.hash_password(code), exp))
         conn.commit()
     try:
-        outbound.send_text("+" + digits(phone),
-                           f"Your ESCAPE code is {code}. It expires in 5 minutes. Never share it.")
+        try:
+            outbound.send_otp_template("+" + digits(phone), code)
+        except Exception:  # template missing/unapproved: free-form fallback
+            outbound.send_text("+" + digits(phone),
+                               f"Your ESCAPE code is {code}. It expires in 5 minutes. Never share it.")
     except Exception:
         with db.connect() as conn:
             crow = conn.execute("SELECT id FROM contacts WHERE business_id = ? AND wa_user_id = ?",

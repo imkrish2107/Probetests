@@ -140,6 +140,27 @@ def terminate_call(call_id: str) -> dict:
         "messaging_product": "whatsapp", "call_id": call_id, "action": "terminate"})
 
 
+def otp_template_payload(to: str, code: str) -> dict:
+    """Pure payload for the approved `otp_code` AUTHENTICATION template."""
+    return {
+        "messaging_product": "whatsapp", "recipient_type": "individual",
+        "to": to, "type": "template",
+        "template": {"name": "otp_code", "language": {"code": "en"},
+            "components": [
+                {"type": "body",
+                 "parameters": [{"type": "text", "text": code}]},
+                {"type": "button", "sub_type": "url", "index": "0",
+                 "parameters": [{"type": "text", "text": code}]}]}}
+
+
+def send_otp_template(to: str, code: str) -> dict:
+    """Approved-template OTP send; works outside the 24h window. Raises
+    GraphError when the template is missing or unapproved, and the caller
+    falls back to free-form text."""
+    token, pnid = creds()
+    return _call("POST", f"{pnid}/messages", token, json=otp_template_payload(to, code))
+
+
 def send_text(to: str, text: str) -> dict:
     """Free-form text; needs the 24h service window open."""
     token, pnid = creds()
@@ -245,6 +266,9 @@ def selfcheck() -> None:
     assert not ok, "3 unanswered to one number blocks that number"
     ok, _ = limits_ok("+912222222222")
     assert ok, "limits apply per phone, not globally"
+    p = otp_template_payload("+911234567890", "123456")
+    assert p["template"]["name"] == "otp_code"
+    assert p["template"]["components"][0]["parameters"][0]["text"] == "123456"
     print("outbound selfcheck: PASS")
 
 
