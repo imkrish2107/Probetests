@@ -24,8 +24,14 @@ def ensure_table() -> None:
         conn.commit()
 
 
-def _now() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+def utc_sqlite(hours_ago: float = 0) -> str:
+    """UTC as 'YYYY-MM-DD HH:MM:SS': string-comparable with SQLite datetime('now').
+
+    Never compare Python isoformat() text against SQLite timestamps: the space
+    sorts before isoformat's 'T', so every window check silently breaks.
+    """
+    return (dt.datetime.now(dt.timezone.utc)
+            - dt.timedelta(hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def log(kind: str, call_id: str = "") -> None:
@@ -38,9 +44,8 @@ def log(kind: str, call_id: str = "") -> None:
 
 
 def limits_ok() -> tuple[bool, str]:
-    now = _now()
-    day = (now - dt.timedelta(hours=24)).isoformat()
-    week = (now - dt.timedelta(days=7)).isoformat()
+    day = utc_sqlite(24)
+    week = utc_sqlite(7 * 24)
     with db.connect() as conn:
         rows = conn.execute("SELECT kind, at FROM outbound_log ORDER BY id").fetchall()
     if sum(1 for k, at in rows if k == "request" and at > day) >= 1:
@@ -203,6 +208,15 @@ def selfcheck() -> None:
         conn.commit()
     ok, reason = limits_ok()
     assert not ok and "7 days" in reason, reason  # 2 requests per 7 days
+    with db.connect() as conn:
+        conn.execute("DELETE FROM outbound_log")
+        conn.commit()
+    log("request")
+    with db.connect() as conn:
+        conn.execute("UPDATE outbound_log SET at = datetime('now', '-20 hours')")
+        conn.commit()
+    ok, reason = limits_ok()
+    assert not ok and "24h" in reason, reason  # a request 20h old still blocks
     with db.connect() as conn:
         conn.execute("DELETE FROM outbound_log")
         conn.commit()

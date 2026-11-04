@@ -3,7 +3,6 @@
 Prices in paise, computed on the server. COD only. Phones matched on the
 last 10 digits. No order data leaves without a phone match or OTP verify.
 """
-import datetime as dt
 import os
 import re
 import secrets
@@ -51,10 +50,6 @@ def ensure_tables() -> None:
         if "order_id" not in cols:
             conn.execute("ALTER TABLE messages ADD COLUMN order_id INTEGER DEFAULT 0")
         conn.commit()
-
-
-def _now() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
 
 
 def digits(phone: str) -> str:
@@ -263,7 +258,7 @@ def remind_pending() -> int:
     """Scheduler: pending_call orders older than 30min get one reminder, then
     needs_followup. Cut the unanswered-call retry; the message stays."""
     ensure_tables()
-    cutoff = (_now() - dt.timedelta(minutes=30)).isoformat()
+    cutoff = outbound.utc_sqlite(0.5)
     n = 0
     with db.connect() as conn:
         rows = conn.execute("SELECT * FROM orders WHERE status = 'pending_call'"
@@ -300,14 +295,14 @@ def request_otp(business_id: int, phone: str) -> dict:
     if not orders_for_phone(business_id, phone):
         return {"sent": False, "message": OTP_MSG}
     import auth
-    hour = (_now() - dt.timedelta(hours=1)).isoformat()
+    hour = outbound.utc_sqlite(1)
     with db.connect() as conn:
         sends = conn.execute("SELECT COUNT(*) FROM otps WHERE business_id = ? AND phone = ?"
                              " AND created_at > ?", (business_id, digits(phone), hour)).fetchone()[0]
     if sends >= 3:
         return {"sent": False, "message": OTP_MSG}
     code = f"{secrets.randbelow(900000) + 100000:06d}"
-    exp = (_now() + dt.timedelta(minutes=5)).isoformat()
+    exp = outbound.utc_sqlite(-5 / 60)  # 5 min ahead, SQLite-shaped
     with db.connect() as conn:
         conn.execute("INSERT INTO otps (business_id, phone, code_hash, expires_at)"
                      " VALUES (?,?,?,?)",
@@ -340,7 +335,7 @@ def verify_otp(business_id: int, phone: str, code: str) -> tuple[bool, str]:
     if not row:
         return False, "no_code"
     import auth
-    if row["expires_at"] < _now().isoformat():
+    if row["expires_at"] < outbound.utc_sqlite():
         return False, "expired"
     if row["attempts"] >= 3:
         return False, "locked"
@@ -510,6 +505,17 @@ def selfcheck() -> None:
     assert order_action(1, o["id"], "+911234567890", "confirmed")["status"] == "confirmed"
     assert order_action(1, o["id"], "+911234567890", "confirmed")["error"] == "bad_transition"
     assert order_action(1, o["id"], "+911234567890", "cancelled")["status"] == "cancelled"
+    o2 = create_order("escape", [{"product_id": 1, "qty": 1}], "Dev", "+919876543210",
+                      "9 Cross St, Kochi", True)
+    assert remind_pending() == 0, "fresh order must not be reminded"
+    assert get_order(1, o2["id"])["status"] == "pending_call"
+    with db.connect() as conn:
+        conn.execute("UPDATE orders SET created_at = datetime('now', '-31 minutes')"
+                     " WHERE id = ?", (o2["id"],))
+        conn.commit()
+    assert remind_pending() == 1
+    assert get_order(1, o2["id"])["status"] == "needs_followup"
+    assert remind_pending() == 0, "reminded once only"
     # OTP: unknown number gets the same message, no row
     m1 = request_otp(1, "+910000000000")
     assert m1["message"] == OTP_MSG and m1["sent"] is False
