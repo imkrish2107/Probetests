@@ -81,7 +81,7 @@ def _biz_by_slug(slug: str) -> dict:
 def list_products(slug: str) -> list[dict]:
     biz = _biz_by_slug(slug)
     with db.connect() as conn:
-        rows = conn.execute("SELECT slug, name, price_paise, image, fabric, fit, sizes"
+        rows = conn.execute("SELECT id, slug, name, price_paise, image, fabric, fit, sizes"
                             " FROM products WHERE business_id = ? AND active = 1 ORDER BY id",
                             (biz["id"],)).fetchall()
     return [dict(r) for r in rows]
