@@ -21,7 +21,7 @@ import re
 import sellers
 from argon2.exceptions import HashingError
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, Query, Request, Response
+from fastapi import BackgroundTasks, FastAPI, Header, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from whatsapp import iter_value_items, verify_signature
@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(300)
             try:
                 automation.scheduler_tick()
-                purchases.tracker_tick()
+                await asyncio.to_thread(purchases.tracker_tick)
             except Exception as e:
                 log.warning("scheduler tick failed: %s", e)
 
@@ -213,7 +213,7 @@ async def _maybe_voice_call(event: dict, raw: bytes, sig: str) -> bool:
 
 
 @app.post("/webhook")
-async def receive(request: Request):
+async def receive(request: Request, background_tasks: BackgroundTasks):
     raw = await request.body()
     sig = request.headers.get("x-hub-signature-256", "")
     if not verify_signature(raw, sig, os.getenv("WHATSAPP_APP_SECRET", "")):
@@ -235,7 +235,12 @@ async def receive(request: Request):
             if kind == "status":
                 _apply_status(biz["id"], item)
             elif kind == "message":
-                _handle_inbound(biz["id"], item)
+                # Seller traffic is slow (DB + one model parse): thread it so
+                # the webhook answers 200 first. Starlette runs sync
+                # background tasks in a threadpool.
+                if _handle_inbound(biz["id"], item):
+                    background_tasks.add_task(
+                        sellers.handle_seller_message, int(biz["id"]), dict(item))
             else:
                 if kind != "call" or not voice_done:
                     log.info("webhook call event: %s", json.dumps(item)[:300])
@@ -271,17 +276,20 @@ def _ensure_contact(business_id: int, wa_user_id: str, phone: str) -> int:
         return cur.lastrowid
 
 
-def _handle_inbound(business_id: int, item: dict) -> None:
-    """One Call Now auto-reply per contact per day (queued until real sends land)."""
+def _handle_inbound(business_id: int, item: dict) -> bool:
+    """One Call Now auto-reply per contact per day (queued until real sends land).
+
+    Returns True when this is seller traffic: the caller must run
+    sellers.handle_seller_message in a background thread, never inline.
+    """
     wa_id = item.get("from", "")
     if not wa_id:
-        return
+        return False
     # Vendor traffic never gets the Call Now auto-reply, never becomes a contact.
     kind, text = sellers.inbound_text(item)
     if sellers.is_known_seller(business_id, wa_id) \
             or re.fullmatch(r"QUOTE\s+[A-Z0-9]{6}", text.strip().upper()):
-        sellers.handle_seller_message(business_id, item)
-        return
+        return True
     cid = _ensure_contact(business_id, wa_id, "")
     import datetime as dt
     day_ago = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)).isoformat()
@@ -293,6 +301,7 @@ def _handle_inbound(business_id: int, item: dict) -> None:
     with db.connect() as conn:
         conn.execute("UPDATE contacts SET auto_reply_at = datetime('now') WHERE id = ?", (cid,))
         conn.commit()
+    return False
 
 
 # ---- Dashboard API (login required below) ----

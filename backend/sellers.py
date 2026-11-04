@@ -219,7 +219,8 @@ def is_known_seller(bid: int, wa_id: str) -> bool:
 
 
 def handle_seller_message(bid: int, item: dict) -> None:
-    """Fast DB paths inline; the one model parse runs in the caller's thread."""
+    """Fast DB paths inline; the one model parse runs in a background thread
+    (the webhook schedules this via BackgroundTasks, never inline)."""
     import sys
     wa_id = digits(item.get("from", ""))
     kind, text = inbound_text(item)
