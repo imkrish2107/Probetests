@@ -22,7 +22,7 @@ async function req(path: string, init?: RequestInit) {
 }
 
 export const api = {
-  products: (): Promise<{ items: Product[] }> => req(`/api/public/products?slug=escape`),
+  products: (): Promise<{ items: Product[]; tryon: boolean }> => req(`/api/public/products?slug=escape`),
   createOrder: (body: object) =>
     req(`/api/public/orders`, {
       method: "POST",

@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 
-type Props = { productName: string };
+type Props = { productName: string; productSlug: string };
 
-export default function TryOn({ productName }: Props) {
+export default function TryOn({ productName, productSlug }: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [consent, setConsent] = useState(false);
@@ -16,6 +16,16 @@ export default function TryOn({ productName }: Props) {
 
   useEffect(() => () => stream?.getTracks().forEach((t) => t.stop()), [stream]);
 
+  // The <video> element only exists after first render; attach the stream here,
+  // not in start(), where video.current is still null.
+  useEffect(() => {
+    const v = video.current;
+    if (v && stream) {
+      v.srcObject = stream;
+      v.play().catch(() => {});
+    }
+  }, [stream]);
+
   async function start() {
     setMsg("");
     try {
@@ -24,19 +34,30 @@ export default function TryOn({ productName }: Props) {
         audio: false,
       });
       setStream(s);
-      if (video.current) {
-        video.current.srcObject = s;
-        await video.current.play();
-      }
     } catch {
       setState("error");
-      setMsg("Camera blocked. Allow camera access, or use a browser over HTTPS.");
+      setMsg("Camera blocked. Allow camera access, or upload a photo instead.");
     }
   }
 
   function stop() {
     stream?.getTracks().forEach((t) => t.stop());
     setStream(null);
+  }
+
+  async function sendBlob(blob: Blob) {
+    setShot(URL.createObjectURL(blob));
+    setState("working");
+    setMsg("Stitching your preview…");
+    try {
+      const { id } = await api.tryon(blob, productSlug);
+      setPreview(api.tryonUrl(id));
+      setState("idle");
+      setMsg("");
+    } catch (e) {
+      setState("error");
+      setMsg(e instanceof Error ? e.message : "Preview failed.");
+    }
   }
 
   async function capture() {
@@ -48,27 +69,30 @@ export default function TryOn({ productName }: Props) {
     c.height = Math.round(v.videoHeight * scale);
     c.getContext("2d")!.drawImage(v, 0, 0, c.width, c.height);
     const blob = await new Promise<Blob | null>((res) => c.toBlob(res, "image/jpeg", 0.85));
-    if (!blob) return;
-    setShot(URL.createObjectURL(blob));
-    setState("working");
-    setMsg("Stitching your preview…");
-    try {
-      const { id } = await api.tryon(blob, productName);
-      setPreview(api.tryonUrl(id));
-      setState("idle");
-      setMsg("");
-    } catch (e) {
+    if (blob) await sendBlob(blob);
+  }
+
+  async function uploadFile(f: File) {
+    setMsg("");
+    if (!["image/jpeg", "image/png", "image/webp"].includes(f.type)) {
       setState("error");
-      setMsg(e instanceof Error ? e.message : "Preview failed.");
+      setMsg("Use a JPEG, PNG or WebP photo.");
+      return;
     }
+    if (f.size > 8 * 1024 * 1024) {
+      setState("error");
+      setMsg("Photo over 8 MB — pick a smaller one.");
+      return;
+    }
+    await sendBlob(f);
   }
 
   return (
     <div className="border-t rule pt-6 mt-8">
       <h2 className="font-display text-2xl">Fitting room</h2>
       <p className="text-sm opacity-80 mt-1">
-        Live preview on yourself. Your photo is used only for this preview and deleted
-        within an hour — never stored, never shared.
+        Live preview of the {productName} on yourself. Your photo is used only
+        for this preview and deleted within an hour — never stored, never shared.
       </p>
       <label className="flex items-start gap-2 mt-3 text-sm">
         <input
@@ -79,7 +103,7 @@ export default function TryOn({ productName }: Props) {
         />
         I consent to one AI preview of myself wearing this garment.
       </label>
-      <div className="flex gap-3 mt-3 flex-wrap">
+      <div className="flex gap-3 mt-3 flex-wrap items-center">
         {!stream ? (
           <button className="btn" onClick={start} disabled={!consent}>
             Start camera
@@ -94,14 +118,31 @@ export default function TryOn({ productName }: Props) {
             </button>
           </>
         )}
+        <label className={`btn cursor-pointer ${!consent ? "opacity-40" : ""}`}>
+          Upload photo
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            className="hidden"
+            disabled={!consent}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void uploadFile(f);
+              e.target.value = "";
+            }}
+          />
+        </label>
       </div>
       {state === "error" && msg && <p className="mt-2 text-sm text-oxblood">{msg}</p>}
       {state === "working" && <p className="mt-2 text-sm">{msg}</p>}
       <div className="grid grid-cols-2 gap-4 mt-4">
         <div>
-          {stream && (
-            <video ref={video} playsInline muted className="w-full border rule aspect-[3/4] object-cover" />
-          )}
+          <video
+            ref={video}
+            playsInline
+            muted
+            className={`w-full border rule aspect-[3/4] object-cover ${stream ? "" : "hidden"}`}
+          />
           {shot && !stream && (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={shot} alt="Your captured photo" className="w-full border rule" />

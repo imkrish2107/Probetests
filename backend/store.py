@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import time
+from pathlib import Path
 
 import db
 import outbound
@@ -355,13 +356,34 @@ def verify_otp(business_id: int, phone: str, code: str) -> tuple[bool, str]:
 
 # ---- Virtual try-on (live browser frame, consent required) ----
 
-TRYON_ENABLED = os.getenv("TRYON_ENABLED", "true").lower() not in ("0", "false", "no")
+def tryon_enabled() -> bool:
+    """Call-time read: main.py imports store before backend/.env loads, so an
+    import-time constant would freeze the pre-dotenv value."""
+    from dotenv import load_dotenv
+    load_dotenv()
+    return os.getenv("TRYON_ENABLED", "true").lower() not in ("0", "false", "no")
 _tryon_hold: dict[str, tuple[bytes, float]] = {}  # id -> (jpeg, expiry); memory only
 _tryon_ips: dict[str, list[float]] = {}
 
 
 class TryonError(Exception):
     pass
+
+
+def _product_photo(slug_or_name: str) -> tuple[str, bytes | None]:
+    """(display name, garment jpeg) for the try-on edit; (raw, None) when the
+    product or its photo is unknown, so the prompt falls back to words."""
+    with db.connect() as conn:
+        row = conn.execute("SELECT name, image FROM products WHERE slug = ? OR name = ?",
+                           (slug_or_name, slug_or_name)).fetchone()
+    if not row or not row["image"]:
+        return slug_or_name, None
+    path = (Path(__file__).resolve().parent.parent
+            / "store" / "public" / "products" / row["image"])
+    try:
+        return row["name"], path.read_bytes()
+    except OSError:
+        return row["name"], None
 
 
 def tryon_preview(image: bytes, mime: str, product: str = "") -> tuple[str, bytes]:
@@ -391,18 +413,22 @@ def tryon_preview(image: bytes, mime: str, product: str = "") -> tuple[str, byte
         raise
     except Exception:
         raise TryonError("could not read that photo")
-    garment = f", dressing them in {product}" if product else ""
+    garment, garment_photo = _product_photo(product) if product else ("", None)
     prompt = ("Keep the person's face, body shape, skin tone, pose and background"
-              f" exactly unchanged{garment}; change only the clothing to match the"
+              f" exactly unchanged{(', dressing them in ' + garment) if garment else ''};"
+              " change only the clothing to match the"
               " garment's colour, pattern and cut. Photorealistic.")
     key = os.getenv("MODEL_API_KEY", "")
     if not key:
         raise TryonError("MODEL_API_KEY missing")
     import httpx
+    files = [("image", ("photo.jpg", clean, "image/jpeg"))]
+    if garment_photo:
+        files.append(("image", ("garment.jpg", garment_photo, "image/jpeg")))
     try:
         r = httpx.post("https://api.meta.ai/v1/images/edits",
                        headers={"Authorization": f"Bearer {key}"}, timeout=120,
-                       files={"image": ("photo.jpg", clean, "image/jpeg")},
+                       files=files,
                        data={"model": "muse-image-1.0", "prompt": prompt})
     except Exception as e:
         raise TryonError(f"image service unreachable: {e}") from e
@@ -477,10 +503,15 @@ def selfcheck() -> None:
         conn.execute("INSERT INTO businesses (slug, name, wa_display_number) VALUES (?,?,?)",
                      ("escape", "ESCAPE", "15550001111"))
         conn.execute("INSERT INTO products (business_id, slug, name, price_paise, image)"
-                     " VALUES (1,'tee','Tee',99900,'tee.jpg')")
-        conn.execute("INSERT INTO products (business_id, slug, name, price_paise)"
-                     " VALUES (1,'hood','Hoodie',199900)")
+                     " VALUES (1,'tee','Tee',99900,'tee-white.jpg')")
+        conn.execute("INSERT INTO products (business_id, slug, name, price_paise, image)"
+                     " VALUES (1,'hood','Hoodie',199900,'hoodie.jpg')")
         conn.commit()
+    photos = Path(__file__).resolve().parent.parent / "store" / "public" / "products"
+    with db.connect() as conn:
+        missing = [r["image"] for r in conn.execute(
+            "SELECT image FROM products WHERE image <> ''") if not (photos / r["image"]).exists()]
+    assert not missing, f"product photos missing from store/public/products: {missing}"
     assert len(list_products("escape")) == 2
     for kw in ({"phone": "123"}, {"name": "A", "address": "short"}, {"items": []}):
         args = {"items": [{"product_id": 1, "qty": 1}], "name": "Ab",

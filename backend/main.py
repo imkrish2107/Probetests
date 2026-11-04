@@ -327,7 +327,7 @@ def _handle_store_message(business_id: int, wa_id: str, cid: int, item: dict) ->
 @app.get("/api/public/products")
 def public_products(slug: str):
     try:
-        return {"items": store.list_products(slug)}
+        return {"items": store.list_products(slug), "tryon": store.tryon_enabled()}
     except ValueError:
         return api_error("not_found", "unknown store", 404)
 
@@ -380,7 +380,7 @@ async def public_order_action(order_id: int, request: Request):
 
 @app.post("/api/public/tryon")
 async def public_tryon(request: Request):
-    if not store.TRYON_ENABLED:
+    if not store.tryon_enabled():
         return api_error("disabled", "try-on is off", 404)
     form = await request.form()
     if form.get("consent") not in ("1", "true", "yes", "on"):
@@ -392,8 +392,8 @@ async def public_tryon(request: Request):
     if store.tryon_ratelimited(request.client.host if request.client else "?"):
         return api_error("rate_limited", "too many previews, try later", 429)
     try:
-        tid, _ = store.tryon_preview(data, up.content_type or "",
-                                     str(form.get("product") or ""))
+        tid, _ = await asyncio.to_thread(
+            store.tryon_preview, data, up.content_type or "", str(form.get("product") or ""))
     except store.TryonError as e:
         return api_error("invalid", str(e), 400)
     except Exception:

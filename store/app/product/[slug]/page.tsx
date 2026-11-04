@@ -9,6 +9,7 @@ const SIZES = ["XS", "S", "M", "L", "XL"];
 
 export default function ProductPage({ params }: { params: { slug: string } }) {
   const [p, setP] = useState<Product | null>(null);
+  const [tryonOn, setTryonOn] = useState(true);
   const [size, setSize] = useState("M");
   const [added, setAdded] = useState(false);
   const [missing, setMissing] = useState(false);
@@ -16,10 +17,12 @@ export default function ProductPage({ params }: { params: { slug: string } }) {
   useEffect(() => {
     api
       .products()
-      .then(({ items }) => {
+      .then(({ items, tryon }) => {
         const found = items.find((x) => x.slug === params.slug);
-        if (found) setP(found);
-        else setMissing(true);
+        if (found) {
+          setP(found);
+          setTryonOn(tryon !== false);
+        } else setMissing(true);
       })
       .catch(() => setMissing(true));
   }, [params.slug]);
@@ -78,7 +81,7 @@ export default function ProductPage({ params }: { params: { slug: string } }) {
             stretch; go by your trouser waist.
           </p>
         </details>
-        <TryOn productName={p.name} />
+        {tryonOn && <TryOn productName={p.name} productSlug={p.slug} />}
       </div>
     </div>
   );
