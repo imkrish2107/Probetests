@@ -14,6 +14,7 @@ import call_bot
 import db
 import house
 import hunt
+import vendor_search
 import httpx
 import re
 import sellers
@@ -293,6 +294,8 @@ boq.routes(app, require_api_key=require_api_key,
            need_login=need_login, api_error=api_error)
 house.routes(app, require_api_key=require_api_key,
              need_login=need_login, api_error=api_error)
+vendor_search.routes(app, require_api_key=require_api_key,
+                     need_login=need_login, api_error=api_error)
 
 
 @app.post("/api/auth/signup", status_code=201)

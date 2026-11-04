@@ -481,18 +481,20 @@ def finder(spot: dict, country: str = "IN") -> tuple[list[dict], int]:
 
 
 def find_listings(queries: list[str], country: str = "IN", max_n: int = 12,
-                  max_searches: int = 3) -> tuple[list[dict], list[dict], int]:
+                  max_searches: int = 3, city: str = "") -> tuple[list[dict], list[dict], int]:
     """Shared Finder: web_search per query, product pages only, deduped."""
     found: list[dict] = []
     seen: set[str] = set()
     usages: list[dict] = []
     searches = 0
+    loc: dict = {"type": "approximate", "country": country}
+    if city.strip():
+        loc["city"] = city.strip()
     for q in queries[:max_searches]:
         data, usage = responses_request({
             "model": MODEL,
             "input": q,
-            "tools": [{"type": "web_search",
-                       "user_location": {"type": "approximate", "country": country}}],
+            "tools": [{"type": "web_search", "user_location": loc}],
             "include": ["web_search_call.results"]})
         searches += 1
         usages.append(usage)
