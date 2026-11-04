@@ -216,19 +216,20 @@ def create_purchase(bid: int, uid: int, listing_id: int, price_seen,
                     s["phone"] if s else "", text) if s else ""}
     buyer = f"{biz['delivery_name']}, {biz['delivery_address']}, {biz['delivery_phone']}" \
         if biz else ""
+    pay_text = "cash on delivery" if (payment or "cod") == "cod" else "paying you directly"
     params = [sellers.clean_param(x) for x in
               (s["name"], li["title"][:200], str(li["price"] or "quote"),
-               str(delivery_option or "-")[:200], buyer[:200])]
-    text = (f"Hello {s['name']}, order request for {li['title'][:80]}"
-            f" at {li['price']} ({delivery_option}). Deliver to: {buyer}."
-            f" Payment: {'cash on delivery' if (payment or 'cod') == 'cod' else 'paying you directly'}")
+               str(delivery_option or "-")[:200], buyer[:200], pay_text)]
+    text = (f"Hello {s['name']}, please confirm this order: {li['title'][:80]}"
+            f" at {li['price']}. Delivery {delivery_option} to {buyer}."
+            f" Payment: {pay_text}.")
     try:
         r = _send_logged(bid, s, li["hunt_item_id"] or li["hunt_id"],
-                         listing_id, "order_request", params, text)
+                         listing_id, "order_request_v2", params, text)
     except ValueError as e:
         return {"purchase_id": pid, "sent": "none", "note": str(e)}
     if r["sent"] != "none":
-        set_status(bid, pid, "order_sent", f"order_request via {r['sent']}")
+        set_status(bid, pid, "order_sent", f"order_request_v2 via {r['sent']}")
     else:
         with db.connect() as conn:
             conn.execute("INSERT INTO purchase_events (business_id, purchase_id,"
@@ -257,7 +258,7 @@ def ask_update(bid: int, pid: int) -> dict:
         s = dict(s)
         today = conn.execute(
             "SELECT id FROM seller_messages WHERE business_id = ? AND seller_id = ?"
-            " AND listing_id = ? AND direction = 'out' AND template = 'tracking_request'"
+            " AND listing_id = ? AND direction = 'out' AND template = 'tracking_request_v2'"
             " AND created_at > datetime('now', '-1 day')",
             (bid, s["id"], p["listing_id"])).fetchone()
         if today:
@@ -266,7 +267,7 @@ def ask_update(bid: int, pid: int) -> dict:
     text = (f"Hello {s['name']}, any update on order #{p['id']} ({p['item'][:60]})?"
             " Please share the courier and tracking number.")
     r = _send_logged(bid, s, p["hunt_id"], p["listing_id"],
-                     "tracking_request", params, text)
+                     "tracking_request_v2", params, text)
     if r["sent"] != "none":
         with db.connect() as conn:
             conn.execute("UPDATE purchases SET reminders = reminders + 1 WHERE id = ?",
@@ -630,7 +631,7 @@ def selfcheck() -> None:
             raise AssertionError("double ask allowed")
         with db.connect() as conn:  # two more days pass, still nothing
             conn.execute("UPDATE seller_messages SET created_at = datetime('now','-2 days')"
-                         " WHERE template = 'tracking_request'")
+                         " WHERE template = 'tracking_request_v2'")
             conn.execute("UPDATE purchases SET reminders = 3,"
                          " track_checked_at = datetime('now','-7 hours') WHERE id = ?", (pid,))
             conn.commit()
@@ -662,6 +663,29 @@ def selfcheck() -> None:
                          " item, price, status) VALUES (1,1,1,'Tee',100,'order_sent')")
             conn.commit()
         assert apply_seller_text(1, 1, "please confirm the order") == "confirmed"
-        print("purchases selfcheck: OK")
+
+        # 7. every module with a selfcheck runs from the command line and
+        # actually checks something (a silent no-op counts as failed).
+        # Read the files, never run them: a sibling selfcheck can need keys or
+        # the network, and this one must stay offline.
+        from pathlib import Path as _Path
+        here = _Path(__file__).parent
+        ran = 0
+        for f in sorted(here.glob("*.py")):
+            text = f.read_text()
+            if "def selfcheck" not in text:
+                continue
+            assert "__main__" in text and '"selfcheck"' in text, f"{f.name}: no selfcheck CLI"
+            ran += 1
+        assert ran > 0, "no sibling selfchecks found"
+        print("purchases selfcheck: PASS")
     finally:
         db.DB_PATH = old
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "selfcheck":
+        selfcheck()
+    else:
+        print("usage: python purchases.py selfcheck")

@@ -1,9 +1,10 @@
 import { api, sessionToken } from "@/lib/api";
 import { logout } from "@/lib/actions";
+import Nav from "./nav";
 
 export const dynamic = "force-dynamic";
 
-// Top bar on every logged-in page.
+// Side rail on every logged-in page (a top strip on phones).
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   let name = "";
   try {
@@ -13,22 +14,20 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     // middleware keeps logged-out users away; expired sessions 401 on page fetch
   }
   return (
-    <>
-      <nav className="topbar">
-        <a href="/hunts">Hunts</a>
-        <a href="/orders">Orders</a>
-        <a href="/sellers">Vendors</a>
-        <a href="/setup">Setup</a>
-        <a href="/">Calls</a>
-        <a href="/contacts">Contacts</a>
-        <a href="/tasks">Tasks</a>
-        <span className="spacer" />
-        <span>{name}</span>
-        <form action={async () => { "use server"; await logout(); }}>
-          <button type="submit">Log out</button>
-        </form>
-      </nav>
+    <div className="shell">
+      <aside className="side">
+        <a className="brand" href="/hunts">
+          Agent dashboard
+        </a>
+        <Nav />
+        <div className="side-foot">
+          <strong>{name}</strong>
+          <form action={async () => { "use server"; await logout(); }}>
+            <button type="submit">Log out</button>
+          </form>
+        </div>
+      </aside>
       {children}
-    </>
+    </div>
   );
 }

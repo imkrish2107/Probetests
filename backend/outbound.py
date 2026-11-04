@@ -67,12 +67,16 @@ def send_text(to: str, text: str) -> dict:
 
 def selfcheck() -> None:
     """Offline: template payload shape only. Never touches the network."""
-    p = template_payload("+911234567890", "stock_check", "en",
-                         ["Meera", "Escape Oversized Tee", "M"])
+    p = template_payload("+911234567890", "stock_check_v2", "en",
+                         ["Ravi Traders", "Cotton Kurta", "M",
+                          "https://shop.example/kurta-42",
+                          "Shop 4, Market Road, Jaipur"])
     t = p["template"]
-    assert t["name"] == "stock_check" and t["language"] == {"code": "en"}
+    assert t["name"] == "stock_check_v2" and t["language"] == {"code": "en"}
     assert [x["text"] for x in t["components"][0]["parameters"]] == [
-        "Meera", "Escape Oversized Tee", "M"]
+        "Ravi Traders", "Cotton Kurta", "M",
+        "https://shop.example/kurta-42",
+        "Shop 4, Market Road, Jaipur"]
     print("outbound selfcheck: PASS")
 
 

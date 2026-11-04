@@ -161,23 +161,61 @@ export async function optOutSeller(form: FormData) {
   redirect("/sellers");
 }
 
+function sentNote(r: any): string {
+  if (r?.sent && r.sent !== "none") return "Sent on WhatsApp. Replies will appear here.";
+  return r?.note || "The message was not sent.";
+}
+
 export async function stockCheck(form: FormData) {
-  // Two-step: without send=1, shows the exact message first; with it, sends.
   const token = await sessionToken();
   const listing = String(form.get("listing_id"));
   const hid = String(form.get("hunt_id"));
+  let note = "";
   try {
-    await api(`/api/listings/${listing}/stock-check`, {
+    const r = await api(`/api/listings/${listing}/stock-check`, {
       method: "POST",
-      body: JSON.stringify({
-        seller_id: Number(form.get("seller_id") || 0) || null,
-        preview: !form.get("send"),
-      }),
+      body: JSON.stringify({ seller_id: Number(form.get("seller_id") || 0) || null }),
+    }, token);
+    note = sentNote(r);
+  } catch (e) {
+    redirect(`/hunts/${hid}?error=${encodeURIComponent(friendly(e))}`);
+  }
+  redirect(`/hunts/${hid}?sent=${encodeURIComponent(note)}`);
+}
+
+export async function quoteRequest(form: FormData) {
+  const token = await sessionToken();
+  const listing = String(form.get("listing_id"));
+  const hid = String(form.get("hunt_id"));
+  let note = "";
+  try {
+    const r = await api(`/api/listings/${listing}/quote-request`, {
+      method: "POST",
+      body: JSON.stringify({ seller_id: Number(form.get("seller_id") || 0) || null }),
+    }, token);
+    note = sentNote(r);
+  } catch (e) {
+    redirect(`/hunts/${hid}?error=${encodeURIComponent(friendly(e))}#quotes`);
+  }
+  redirect(`/hunts/${hid}?sent=${encodeURIComponent(note)}#quotes`);
+}
+
+// A logged-in user says which opted-in vendor sells this listing.
+export async function linkSeller(form: FormData) {
+  const token = await sessionToken();
+  const listing = Number(form.get("listing_id"));
+  const hid = String(form.get("hunt_id"));
+  const back = String(form.get("back") || "");
+  try {
+    await api(`/api/sellers/${form.get("seller_id")}/link`, {
+      method: "POST",
+      body: JSON.stringify({ listing_id: listing }),
     }, token);
   } catch (e) {
     redirect(`/hunts/${hid}?error=${encodeURIComponent(friendly(e))}`);
   }
-  redirect(form.get("send") ? `/hunts/${hid}` : `/hunts/${hid}?preview=${listing}`);
+  // Back to the same step: order screen, or the message preview.
+  redirect(back.startsWith("/hunts/") ? back : `/hunts/${hid}?preview=${listing}#ask`);
 }
 
 const COOKIE = {
@@ -363,6 +401,7 @@ export async function createPurchase(form: FormData) {
   const hid = String(form.get("hunt_id") || "");
   const listing = String(form.get("listing_id"));
   let pid = "";
+  let problem = "";
   try {
     const r = await api("/api/purchases", {
       method: "POST",
@@ -375,10 +414,11 @@ export async function createPurchase(form: FormData) {
       }),
     }, token);
     pid = String(r.purchase_id);
+    if (r.sent === "none") problem = r.note || "The order did not reach the seller.";
   } catch (e) {
     redirect(`/hunts/${hid}/order/${listing}?error=${encodeURIComponent(friendly(e))}`);
   }
-  redirect(`/orders/${pid}`);
+  redirect(problem ? `/orders/${pid}?error=${encodeURIComponent(problem)}` : `/orders/${pid}`);
 }
 
 export async function cancelPurchase(form: FormData) {

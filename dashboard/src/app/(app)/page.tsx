@@ -1,8 +1,8 @@
-import { get, Expired, Lang } from "@/lib/ui";
+import { get, Expired, Lang, PageHead, when } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
 
-// Home: today's totals + calls table, "Load more" pages through.
+// Voice agent calls: today's figures and the calls table, "Load more" pages through.
 export default async function Home({
   searchParams,
 }: {
@@ -12,26 +12,46 @@ export default async function Home({
   const s = await get("/api/stats");
   const c = await get(before ? `/api/calls?before=${before}` : "/api/calls");
   if (s.expired || c.expired) return <Expired />;
+  const items: any[] = c.data.items ?? [];
   return (
     <main>
-      <div className="card">
-        <h1>Today</h1>
-        <p>
-          {s.data.calls} calls · {s.data.bookings} bookings · {s.data.open_tasks} open tasks (
-          {s.data.urgent_tasks} urgent) · ${Number(s.data.cost_usd).toFixed(4)}
-        </p>
+      <PageHead title="Calls" note="Every call the voice agent took, with its transcript and outcome." />
+      <div className="figures card">
+        <div><b>{s.data.calls}</b><span className="muted small">calls today</span></div>
+        <div><b>{s.data.open_tasks}</b><span className="muted small">open tasks, {s.data.urgent_tasks} urgent</span></div>
+        <div><b>${Number(s.data.cost_usd).toFixed(3)}</b><span className="muted small">model cost today</span></div>
       </div>
-      <div className="card">
-        <h1>Calls</h1>
-        {c.data.items.length === 0 && <p>No calls yet. Add your business info to start.</p>}
-        {c.data.items.map((call: any) => (
-          <p key={call.id}>
-            <a href={`/calls/${call.id}`}>{call.contact.name || "Unknown"}</a> <Lang code={call.language} />{" "}
-            {call.outcome} · {call.duration_s}s · ${Number(call.cost_usd).toFixed(4)}
-          </p>
-        ))}
-        {c.data.next_before && <a href={`/?before=${c.data.next_before}`}>Load more</a>}
-      </div>
+      {items.length === 0 ? (
+        <p className="muted">No calls yet. They appear here as soon as someone calls your WhatsApp number.</p>
+      ) : (
+        <div className="table-wrap">
+          <table className="ledger">
+            <thead>
+              <tr>
+                <th>Caller</th>
+                <th>Language</th>
+                <th>Outcome</th>
+                <th>Started</th>
+                <th className="num">Length</th>
+                <th className="num">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((call) => (
+                <tr key={call.id}>
+                  <td><a href={`/calls/${call.id}`}>{call.contact?.name || "Unknown"}</a></td>
+                  <td><Lang code={call.language} /></td>
+                  <td>{call.outcome}</td>
+                  <td className="muted">{when(call.started_at)}</td>
+                  <td className="num">{call.duration_s}s</td>
+                  <td className="num">${Number(call.cost_usd).toFixed(3)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {c.data.next_before && <p style={{ marginTop: 16 }}><a href={`/?before=${c.data.next_before}`}>Load more</a></p>}
     </main>
   );
 }

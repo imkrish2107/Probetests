@@ -327,12 +327,18 @@ def _run_plan(hunt_id: int) -> None:
                      json.dumps({k: r.get(k) for k in
                                  ("length", "width", "unit", "seen_text",
                                   "confidence")})))
+            # Keep the user's intake (city, floors, height, finish, built-up):
+            # BOQ, house image and vendor search all read it from here.
+            try:
+                intake = json.loads(h["spot"] or "{}")
+            except ValueError:
+                intake = {}
+            intake.update({k: plan.get(k) for k in
+                           ("door_count", "window_count",
+                            "bathroom_count", "has_dimensions")})
             conn.execute("UPDATE hunts SET status = 'awaiting_rooms',"
                          " spot = ? WHERE id = ?",
-                         (json.dumps({k: plan.get(k) for k in
-                                      ("door_count", "window_count",
-                                       "bathroom_count", "has_dimensions")}),
-                          hunt_id))
+                         (json.dumps(intake), hunt_id))
             conn.commit()
         step(hunt_id, "Plan Reader", "done",
              f"{len(plan.get('rooms') or [])} rooms; check them below")
@@ -379,7 +385,7 @@ def confirm_rooms(hunt_id: int, bid: int, rooms: list[dict]) -> dict:
                          (hunt_id, name,
                           json.dumps({"length": ln, "width": wd, "unit": unit}),
                           unit))
-        conn.execute("UPDATE hunts SET status = 'rooms_confirmed' WHERE id = ?",
+        conn.execute("UPDATE hunts SET status = 'rooms_confirmed', error = '' WHERE id = ?",
                      (hunt_id,))
         conn.commit()
     return {"rooms": len(cleaned)}
@@ -1072,10 +1078,12 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
             rooms = conn.execute("SELECT * FROM hunt_items WHERE hunt_id = ?"
                                  " ORDER BY id", (hunt_id,)).fetchall()
         d = dict(h)
-        d.pop("photo_path", None)
+        d["plan_is_pdf"] = str(d.pop("photo_path", "") or "").lower().endswith(".pdf")
+        concepts =sorted(p.name for p in (DATA / str(u["business_id"])).glob(f"{hunt_id}_concept_*"))
         return {"hunt": d, "steps": [dict(s) for s in steps],
                 "listings": [dict(x) for x in items],
-                "rooms": [dict(x) for x in rooms]}
+                "rooms": [dict(x) for x in rooms],
+                "images": concepts}
 
     @app.get("/api/hunts/{hunt_id}/photo")
     async def hunt_photo(hunt_id: int, request: Request):

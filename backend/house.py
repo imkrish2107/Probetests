@@ -1,4 +1,4 @@
-"""House Artist + approval gate. Concept images only, never design drawings.
+"""House Artist + approval gate. Concept renders only, never design drawings.
 
 Approval is enforced in code: vendor search and calls refuse to run unless
 the live BOQ rows + chosen image still hash to the approved hash. Editing
@@ -7,12 +7,14 @@ the BOQ clears the approval (see boq.set_boq_qty).
 import hashlib
 import json
 import os
+import re
+import time
 
 import httpx
 
 import db
 
-LABEL = "Concept image. Not to scale, and the real building will differ."
+LABEL = "Concept render. Furniture and finishes are illustrative, and it is not to scale."
 MAX_IMAGES = 5
 
 
@@ -34,7 +36,16 @@ def _call_images(prompt: str, plan_b64: str, mime: str) -> bytes:
                    headers={"Authorization": f"Bearer {key}"},
                    json={"model": "muse-image-1.0",
                          "images": [{"image_url": data_url}],
-                         "prompt": prompt, "n": 1}, timeout=180)
+                         "prompt": prompt, "n": 1, "size": "1536x1024",
+                         "output_format": "jpeg"}, timeout=180)
+    if r.status_code == 503:  # Meta marks this one as retryable
+        time.sleep(2)
+        r = httpx.post("https://api.meta.ai/v1/images/edits",
+                       headers={"Authorization": f"Bearer {key}"},
+                       json={"model": "muse-image-1.0",
+                             "images": [{"image_url": data_url}],
+                             "prompt": prompt, "n": 1, "size": "1536x1024",
+                             "output_format": "jpeg"}, timeout=180)
     r.raise_for_status()
     payload = r.json()
     # Accept a URL or inline base64, whichever ImagesResponse carries.
@@ -67,8 +78,25 @@ def _call_images(prompt: str, plan_b64: str, mime: str) -> bytes:
     return base64.b64decode(val)
 
 
+def render_prompt(rooms: list[tuple[str, object, object]], finish: str, style: str) -> str:
+    """Pure: the plan image sets the layout; rooms are the user's confirmed sizes."""
+    listed = "; ".join(
+        f"{re.sub(r'[^\w &/-]', ' ', str(n))[:60].strip()}"
+        + (f" {a:g} x {b:g} ft" if isinstance(a, (int, float)) and isinstance(b, (int, float)) and a and b else "")
+        for n, a, b in rooms[:30])
+    return ("Turn this 2D floor plan into a photorealistic 3D interior render: a cutaway"
+            " dollhouse view from a high angle, with the roof and ceilings removed so every"
+            " room can be seen. Keep the plan's exact layout: the same rooms in the same"
+            " positions and proportions, with the same walls, doors and windows. Do not add,"
+            " remove or move any room."
+            + (f" Rooms: {listed}." if listed else "")
+            + f" Furnish each room for its purpose in a {finish or 'standard'} finish."
+            + (f" Style: {style.strip()[:200]}." if style.strip() else "")
+            + " Soft natural daylight. No text, labels, dimensions, people or watermark.")
+
+
 def generate_image(bid: int, hid: int, style: str = "") -> dict:
-    """House Artist: plan + floors/finish prompt -> concept image file."""
+    """House Artist: floor plan + confirmed rooms -> 3D interior concept render."""
     import base64
     import hunt
     existing = _concept_paths(bid, hid)
@@ -86,12 +114,20 @@ def generate_image(bid: int, hid: int, style: str = "") -> dict:
     raw = hunt.photo_bytes(h["photo_path"] or "")
     if not raw:
         raise RuntimeError("plan file missing")
-    mime = "application/pdf" if raw[:4] == b"%PDF" else "image/jpeg"
-    prompt = (f"Exterior concept view of a {intake.get('floors') or 1}-storey"
-              f" {intake.get('finish') or 'standard'}-finish family house."
-              f" {style.strip()[:200]}"
-              " Daytime, street view, no people close up, no text or watermark.")
-    img = _call_images(prompt, base64.b64encode(raw).decode(), mime)
+    if raw[:4] == b"%PDF":  # Muse Image takes images only
+        raise ValueError("the 3D render needs the plan as a JPEG or PNG. Upload it as an image in a new hunt")
+    with db.connect() as conn:
+        rows = conn.execute("SELECT name, spec FROM hunt_items WHERE hunt_id = ?"
+                            " AND status = 'room' ORDER BY id", (hid,)).fetchall()
+    rooms = []
+    for r in rows:
+        try:
+            spec = json.loads(r["spec"] or "{}")
+        except ValueError:
+            spec = {}
+        rooms.append((r["name"], spec.get("length"), spec.get("width")))
+    prompt = render_prompt(rooms, str(intake.get("finish") or ""), style)
+    img = _call_images(prompt, base64.b64encode(raw).decode(), "image/jpeg")
     if img[:4] == b"%PDF" or len(img) < 1000:
         raise RuntimeError("image call returned no usable image")
     d = hunt.DATA / str(bid)
@@ -298,7 +334,7 @@ def selfcheck() -> None:
             conn.commit()
         out = generate_image(1, 1)
         files.append(hunt.DATA / "1" / out["image"])
-        assert out["label"].startswith("Concept image"), out
+        assert out["label"].startswith("Concept render"), out
         try:
             generate_image(1, 1, "x" * 1)  # still counts to the limit path
         except ValueError:
@@ -345,6 +381,10 @@ def selfcheck() -> None:
                 f.unlink(missing_ok=True)
             except OSError:
                 pass
+    p = render_prompt([("Living room", 18.0, 14.0), ("Kitchen", None, None)], "premium", "warm wood")
+    assert "3D interior" in p and "cutaway" in p and "Do not add" in p, p
+    assert "Living room 18 x 14 ft" in p and "Kitchen;" not in p and "Kitchen." in p, p
+    assert "premium finish" in p and "warm wood" in p and "No text" in p, p
     print("house selfcheck: PASS")
 
 

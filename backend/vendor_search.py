@@ -170,7 +170,8 @@ def vendors_of(bid: int, hid: int) -> dict:
             rows = [dict(r) for r in conn.execute(
                 """SELECT l.id, l.url, l.title, l.seller, l.price, l.currency,
                           l.unit, l.city, l.in_stock, l.delivery, l.verified,
-                          l.verify_note, s.opted_in AS seller_opted_in
+                          l.verify_note, l.seller_id, l.whatsapp,
+                          s.opted_in AS seller_opted_in
                    FROM listings l LEFT JOIN sellers s ON s.id = l.seller_id
                    WHERE l.hunt_id = ? AND l.hunt_item_id = ? ORDER BY l.id""",
                 (hid, it["id"]))]

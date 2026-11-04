@@ -1,5 +1,6 @@
-import { get, Expired } from "@/lib/ui";
+import { get, Expired, PageHead, Status, money, statusWord, when } from "@/lib/ui";
 import { askForUpdate, cancelPurchase, markDelivered } from "@/lib/actions";
+import Submit from "@/lib/submit";
 
 export const dynamic = "force-dynamic";
 
@@ -19,50 +20,31 @@ export default async function OrderPage({
   const p = d.data;
   const chaseable = ["seller_confirmed", "shipped"].includes(p.status) && !p.tracking_number;
   const open = !["delivered", "cancelled", "seller_declined"].includes(p.status);
+  const canDeliver = ["seller_confirmed", "shipped"].includes(p.status);
+  const safeLink = typeof p.tracking_link === "string" && p.tracking_link.startsWith("https://");
   return (
     <main>
-      <div className="card">
-        <h1>
-          Order #{p.id} <span className="pill">{p.status}</span>
-        </h1>
-        {asked && <p>Update asked.</p>}
-        {error && <p className="pill bad">{error}</p>}
-        <p>
-          {p.item} — {p.price ?? "Quote"} {p.unit} from {p.seller_name}
-        </p>
-        <p>
-          Delivery: {p.delivery_option || "—"}
-          {p.delivery_reason && <span className="muted"> ({p.delivery_reason})</span>}
-        </p>
-        {(p.courier || p.tracking_number || p.tracking_link) && (
-          <p>
-            {[p.courier, p.tracking_number].filter(Boolean).join(" · ")}
-            {p.tracking_link && (
-              <>
-                {" · "}
-                <a href={p.tracking_link} target="_blank" rel="noreferrer">
-                  Tracking page
-                </a>
-              </>
-            )}
-          </p>
-        )}
+      <PageHead
+        crumb={{ href: "/orders", text: "All orders" }}
+        title={`Order #${p.id}`}
+        note={<Status value={p.status} />}
+      >
         {chaseable && (
           <form action={async (fd) => { "use server"; await askForUpdate(fd); }}>
             <input type="hidden" name="id" value={p.id} />
-            <button className="btn" type="submit">
-              Ask for update
-            </button>
+            <Submit pending="Asking…">Ask for update</Submit>
           </form>
         )}
         {open && (
           <>
-            <form action={async (fd) => { "use server"; await markDelivered(fd); }}>
-              <input type="hidden" name="id" value={p.id} />
-              <button className="btn" type="submit">
-                Mark delivered
-              </button>
-            </form>{" "}
+            {canDeliver && (
+              <form action={async (fd) => { "use server"; await markDelivered(fd); }}>
+                <input type="hidden" name="id" value={p.id} />
+                <button className="btn ghost" type="submit">
+                  Mark delivered
+                </button>
+              </form>
+            )}
             <form action={async (fd) => { "use server"; await cancelPurchase(fd); }}>
               <input type="hidden" name="id" value={p.id} />
               <button className="btn danger" type="submit">
@@ -71,19 +53,64 @@ export default async function OrderPage({
             </form>
           </>
         )}
-      </div>
-
-      <div className="card">
-        <h2>Timeline</h2>
-        <p className="muted">Who said what, and when. Courier status is never guessed.</p>
-        <ul className="steps">
-          {(p.events ?? []).map((e: any) => (
-            <li key={e.id}>
-              <strong>{e.status}</strong> {e.note} <span className="muted">{e.at}</span>
-            </li>
-          ))}
-        </ul>
-        {(p.events ?? []).length === 0 && <p>No events yet.</p>}
+      </PageHead>
+      {asked && <p className="notice good">We asked the seller for an update.</p>}
+      {error && <p className="notice">{error}</p>}
+      {p.status === "draft" && (
+        <p className="notice">
+          This order hasn’t reached the seller yet. Cancel it and order again once the seller can be
+          messaged.
+        </p>
+      )}
+      <div className="split-even">
+        <section>
+          <h2 className="section-title">Details</h2>
+          <table className="ledger facts">
+            <tbody>
+              <tr><th>Item</th><td>{p.item}</td></tr>
+              <tr><th>Seller</th><td>{p.seller_name}</td></tr>
+              <tr><th>Price</th><td>{money(p.price) ?? "Quote needed"}{p.unit ? ` / ${p.unit}` : ""}</td></tr>
+              <tr>
+                <th>Delivery</th>
+                <td>
+                  {p.delivery_option || "—"}
+                  {p.delivery_reason && <span className="muted"> · Picker: {p.delivery_reason}</span>}
+                </td>
+              </tr>
+              <tr>
+                <th>Tracking</th>
+                <td>
+                  {[p.courier, p.tracking_number].filter(Boolean).join(" · ") || "Not shared yet"}
+                  {safeLink && (
+                    <>
+                      {" · "}
+                      <a href={p.tracking_link} target="_blank" rel="noreferrer">
+                        Tracking page
+                      </a>
+                    </>
+                  )}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+        <section>
+          <h2 className="section-title">Timeline</h2>
+          <p className="muted small">What each side said, and when. Courier status is never guessed.</p>
+          {(p.events ?? []).length === 0 ? (
+            <p className="muted">Nothing yet.</p>
+          ) : (
+            <ul className="agents">
+              {(p.events ?? []).map((e: any) => (
+                <li key={e.id}>
+                  <strong>{statusWord(e.status)}</strong>
+                  <span className="muted small">{when(e.at)}</span>
+                  {e.note && <p>{e.note}</p>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       </div>
     </main>
   );

@@ -3,7 +3,7 @@
 One logged-in dashboard where agents shop for the user. Two flows on one
 shared engine: **shopping** (drop a photo, get verified listings, ask the
 seller, place an order, track it) and **construction** (floor plan → room
-check → BOQ → concept house image → approval → vendor search → calls →
+check → BOQ → 3D interior render → approval → vendor search → calls →
 compare). Payment stays user↔seller, cash on delivery; the app never takes or
 stores card, bank or UPI details, and never logs into seller sites.
 
@@ -39,7 +39,7 @@ Backend (Python 3.12, git-ignored `.venv`):
 
 ```bash
 cd backend && .venv/bin/pip install -r requirements.txt
-.venv/bin/python purchases.py selfcheck && .venv/bin/python sellers.py selfcheck
+.venv/bin/python templates.py selfcheck && .venv/bin/python purchases.py selfcheck && .venv/bin/python sellers.py selfcheck
 ```
 
 Dashboard (Next.js, ledger styling, no tokens in HTML). It talks to the
@@ -59,7 +59,7 @@ print only which names are empty).
 
 ```bash
 cd /home/wa/Probetests && git pull
-cd backend && .venv/bin/python purchases.py selfcheck && .venv/bin/python sellers.py selfcheck
+cd backend && .venv/bin/python templates.py selfcheck && .venv/bin/python purchases.py selfcheck && .venv/bin/python sellers.py selfcheck
 cd ../dashboard && npm install && npm run build
 systemctl restart wa-backend wa-dashboard
 systemctl is-active wa-backend wa-dashboard
@@ -67,13 +67,13 @@ systemctl is-active wa-backend wa-dashboard
 
 ## Status
 
-- Live in code: hunts, BOQ, house image + approval gate, vendor search,
+- Live in code: hunts, BOQ, 3D render + approval gate, vendor search,
   purchases/Picker/Buyer/Tracker, full dashboard (390 px → 1440 px).
-- Fallbacks in use: vendors get `quote_request` on WhatsApp and the Compare
+- Fallbacks in use: vendors get `quote_request_v2` on WhatsApp and the Compare
   table links `tel:`/invite instead of AI calls — `backend/quote_call.py` stays
   out of the repo until the phone test passes.
 - Not yet proven on a real phone: the call probe (Part G), one shopping hunt,
-  one read-plan with per-room accuracy, one house image, one 2-item vendor
+  one read-plan with per-room accuracy, one 3D render, one 2-item vendor
   search. Nothing above is marked passed until real output is seen.
 
 ## Built during the event (AGENT_DASH_BUILD.md, CONSTRUCTION_BUILD.md)

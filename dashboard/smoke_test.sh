@@ -10,9 +10,13 @@ APP_PORT=3111
 UPLOAD_ROUTE="src/app/api-smoke-upload/route.ts"
 rm -f /tmp/smoke_upload.log
 
+FAKE_PID=""
+APP_PID=""
 cleanup() {
-  kill "$FAKE_PID" "$APP_PID" 2>/dev/null || true
+  [ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null || true
+  [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
   rm -f "$UPLOAD_ROUTE"
+  rmdir "$(dirname "$UPLOAD_ROUTE")" 2>/dev/null || true
 }
 trap cleanup EXIT
 

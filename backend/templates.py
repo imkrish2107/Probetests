@@ -5,6 +5,19 @@ Run `python templates.py dry-run` offline; create/status need WHATSAPP_TOKEN.
 import os
 import sys
 
+# Fictional-but-plausible samples for example.body_text: no real people,
+# numbers or addresses. example.com URLs stay out of the address book.
+_FAKE = {
+    "seller": "Ravi Traders",
+    "item": "Cotton Kurta",
+    "size": "M",
+    "listing": "https://shop.example/kurta-42",
+    "area": "Shop 4, Market Road, Jaipur",
+    "buyer": "Meera, Shop 4, Market Road, Jaipur, 9876543210",
+    "price": "Rs. 899",
+    "order": "ORD-1024",
+}
+
 # shortcut: full bodies for demo languages (en/hi/ta); others fall back to English
 TEMPLATES: dict[str, dict] = {
     "booking_confirmed": {"button": None, "body": {
@@ -42,19 +55,67 @@ TEMPLATES: dict[str, dict] = {
         # en only: Meta owns authentication-template wording; approval takes
         # up to 24h, then `status` shows APPROVED and OTPs leave the 24h window.
         "en": "{{1}} is your ESCAPE verification code. It expires in 5 minutes. Never share it."}},
-    "stock_check": {"langs": ["en"], "buttons": ["In stock", "Out of stock"], "body": {
+    "stock_check_v2": {"langs": ["en"], "buttons": ["In stock", "Out of stock"], "body": {
         "en": "Hello {{1}}, a customer is asking about {{2}} in size {{3}}. Listing: {{4}}. Is it still in stock, and what is your final price with delivery to {{5}}? Thank you."}},
-    "order_request": {"langs": ["en"], "buttons": ["Confirm order", "Can't fulfil"], "body": {
-        "en": "Hello {{1}}, please confirm this order for {{2}}, size {{3}}, at {{4}}. Deliver by {{5}} to {{6}}, {{7}}, phone {{8}}. Payment is {{9}} directly to you. Please reply to confirm."}},
-    "tracking_request": {"langs": ["en"], "button": None, "body": {
+    "order_request_v2": {"langs": ["en"], "buttons": ["Confirm order", "Can't fulfil"], "body": {
+        "en": "Hello {{1}}, please confirm this order: {{2}} at {{3}}. Delivery {{4}} to {{5}}. Payment: {{6}}."}},
+    "tracking_request_v2": {"langs": ["en"], "button": None, "body": {
         "en": "Hello {{1}}, could you share the courier and tracking number for order {{2}}? Thank you."}},
-    "quote_request": {"langs": ["en"], "buttons": ["Can't supply"], "body": {
+    "quote_request_v2": {"langs": ["en"], "buttons": ["Can't supply"], "body": {
         "en": "Hello {{1}}, we are collecting quotes for {{2}}, quantity {{3}}, delivery to {{4}}. Please reply with your price per unit, delivery time and minimum order. Thank you."}},
-    "call_permission": {"langs": ["en"], "button": None, "body": {
+    "call_permission_v2": {"langs": ["en"], "button": None, "call_permission_request": True, "body": {
         "en": "Hello {{1}}, may our AI assistant call you about a quote for {{2}}? You can say no at any time."}},
 }
 
 LANGS = ["en", "hi", "ta"]
+
+
+# example.body_text per template per submitted language. Meta rejects bodies
+# with variables and no examples. Old approved bodies keep en-only samples
+# here too, so a resubmit never goes out naked.
+EXAMPLES: dict[str, dict[str, list[str]]] = {
+    "booking_confirmed": {
+        "en": ["Meera", "Escape Boutique", "today, 4 pm"],
+        "hi": ["मीरा", "एसकेप बुटीक", "आज, शाम 4 बजे"],
+        "ta": ["மீரா", "எஸகேப् பொட்டிக्", "இன்று மாலை 4 மணி"]},
+    "booking_reminder": {
+        "en": ["Meera", "Escape Boutique", "4 pm"],
+        "hi": ["मीरा", "एसकेप बुटीक", "शाम 4 बजे"],
+        "ta": ["மீரா", "எஸகேப् பொட்டிக्", "மாலை 4 மணி"]},
+    "booking_changed": {
+        "en": ["Meera", "Escape Boutique", "moved to tomorrow, 4 pm"],
+        "hi": ["मीरा", "एसकेप बुटीक", "कल, शाम 4 बजे"],
+        "ta": ["மீரா", "எஸகேப् பொட்டிக्", "நாளை மாலை 4 மணி"]},
+    "message_received": {
+        "en": ["Meera", "Escape Boutique"],
+        "hi": ["मीरा", "एसकेप बुटीक"],
+        "ta": ["மீரா", "எஸகேப् பொட்டிக्"]},
+    "task_done": {
+        "en": ["Meera", "Escape Boutique", "your slot is confirmed for 4 pm"],
+        "hi": ["मीरा", "एसकेप बुटीक", "आपका समय शाम 4 बजे पक्का है"],
+        "ta": ["மீரா", "எஸகேப् பொட்டிக्", "உங்கள् நேரம् மாலை 4 மணிக்கு உறுதி"]},
+    "call_thanks": {
+        "en": ["Meera", "Escape Boutique"],
+        "hi": ["मीरा", "एसकेप बुटीक"],
+        "ta": ["மீரா", "எஸகேப् பொட்டிக्"]},
+    "call_us": {
+        "en": ["Meera", "Escape Boutique"],
+        "hi": ["मीरा", "एसकेप बुटीक"],
+        "ta": ["மீரா", "எஸகேப् பொட்டிக्"]},
+    "owner_new_lead": {
+        "en": ["7 pm", "missed call, website form"],
+        "hi": ["शाम 7 बजे", "मिस्ड कॉल, वेबसाइट फॉर्म"],
+        "ta": ["மாலை 7 மணி", "தவறிய அழைப்பு, இணையப் படிவம्"]},
+    "stock_check_v2": {"en": [_FAKE["seller"], _FAKE["item"], _FAKE["size"],
+                              _FAKE["listing"], _FAKE["area"]]},
+    "order_request_v2": {"en": [_FAKE["seller"], f"{_FAKE['item']}, size {_FAKE['size']}",
+                                _FAKE["price"], "in 2 days", _FAKE["buyer"],
+                                "cash on delivery"]},
+    "tracking_request_v2": {"en": [_FAKE["seller"], _FAKE["order"]]},
+    "quote_request_v2": {"en": [_FAKE["seller"], _FAKE["item"], "500 pieces",
+                                 "Jaipur"]},
+    "call_permission_v2": {"en": [_FAKE["seller"], _FAKE["item"]]},
+}
 
 
 def render(name: str, lang: str) -> str:
@@ -80,6 +141,11 @@ def _components(name: str, t: dict, lang: str) -> tuple[list, str]:
                      {"type": "OTP", "otp_type": "COPY_CODE", "text": t["button"]}]}],
                 "AUTHENTICATION")
     components: list = [{"type": "BODY", "text": render(name, lang)}]
+    if t.get("category") != "AUTHENTICATION" and name in EXAMPLES and lang in EXAMPLES[name]:
+        # Meta rejects bodies with variables and no example.body_text.
+        components[0]["example"] = {"body_text": [EXAMPLES[name][lang]]}
+    if t.get("call_permission_request"):
+        components.append({"type": "call_permission_request"})
     if t.get("buttons"):  # seller quick replies
         components.append({"type": "BUTTONS", "buttons": [
             {"type": "QUICK_REPLY", "text": b} for b in t["buttons"]]})
@@ -101,34 +167,59 @@ def create(name: str | None = None) -> None:
                            headers={"Authorization": f"Bearer {token}"},
                            json={"name": n, "category": category, "language": lang,
                                  "components": components}, timeout=20)
-            print(n, lang, r.status_code, r.text[:200])
+            try:
+                data = r.json()
+            except ValueError:
+                data = {}
+            if isinstance(data, dict) and data.get("status") == "REJECTED":
+                print(f"REJECTED {n} {lang}: {data.get('rejected_reason', r.text[:200])}")
+            else:
+                print(n, lang, r.status_code, r.text[:200])
 
 
 def status() -> None:
     httpx, token, waba = _graph()
     r = httpx.get(f"https://graph.facebook.com/v21.0/{waba}/message_templates",
-                  params={"fields": "name,language,status", "access_token": token}, timeout=15)
+                  params={"fields": "name,language,status,rejected_reason",
+                          "access_token": token}, timeout=15)
     r.raise_for_status()
     for t in r.json().get("data", []):
-        print(t["name"], t.get("language"), t.get("status"))
+        rej = t.get("rejected_reason")
+        print(t["name"], t.get("language"), t.get("status"),
+              f"rejected_reason={rej}" if rej else "")
 
 
 def selfcheck() -> None:
-    """Offline: every template has its languages, sequential {{n}} placeholders."""
+    """Offline: languages, sequential {{n}}, examples for every submitted body
+    with variables (auth wording is Meta-owned and carries no example), the
+    five resubmits under _v2, and the call-permission component."""
     import re
     assert len(TEMPLATES) == 14, len(TEMPLATES)
+    for v2 in ("stock_check_v2", "order_request_v2", "tracking_request_v2",
+               "quote_request_v2", "call_permission_v2"):
+        assert v2 in TEMPLATES, v2
     for name, t in TEMPLATES.items():
         langs = t.get("langs", ["en"] if t.get("category") == "AUTHENTICATION" else LANGS)
         for lang in langs:
             body = t["body"].get(lang)
             assert body, f"{name} missing {lang}"
-            if name in ("stock_check", "order_request", "tracking_request",
-                      "quote_request", "call_permission"):
+            if name in ("stock_check_v2", "order_request_v2", "tracking_request_v2",
+                        "quote_request_v2", "call_permission_v2"):
                 # new submissions only: old approved bodies stay untouched
                 assert not body.startswith("{{") and not body.endswith("}}"), name
             nums = [int(n) for n in re.findall(r"\{\{(\d+)\}\}", body)]
             # set check, not order: hi/ta word order differs from en
             assert sorted(nums) == list(range(1, len(nums) + 1)), f"{name}/{lang}: {nums}"
+            if nums and t.get("category") != "AUTHENTICATION":
+                ex = EXAMPLES.get(name, {}).get(lang)
+                assert ex and len(ex) == len(nums), f"{name}/{lang} bad example"
+                assert all("{{" not in v and "}}" not in v for v in ex), name
+    comps, _ = _components("call_permission_v2",
+                           TEMPLATES["call_permission_v2"], "en")
+    assert {"type": "call_permission_request"} in comps, comps
+    comps, _ = _components("order_request_v2",
+                           TEMPLATES["order_request_v2"], "en")
+    assert comps[0]["example"]["body_text"][0][5] == "cash on delivery", comps
     print("templates selfcheck: PASS")
 
 

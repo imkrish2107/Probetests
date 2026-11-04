@@ -5,6 +5,7 @@ user clicks. Page/vendor text is untrusted: model calls reading it get no
 tools and return structured output only. Nothing a seller writes can trigger
 a send; only code acts, from DB values.
 """
+import asyncio
 import re
 import secrets
 import sys
@@ -85,6 +86,76 @@ def stock_check_text(seller_name: str, item: str, size: str,
             f" with delivery to {deliver_to}? Thank you.")
 
 
+def stock_params(s, li) -> list[str]:
+    """One source for the preview and the send. The address is shared only on an order."""
+    with db.connect() as conn:
+        hunt = conn.execute("SELECT size_pref FROM hunts WHERE id = ?",
+                            (li["hunt_id"],)).fetchone()
+    size = (hunt["size_pref"] if hunt else "") or "to be confirmed"
+    return [clean_param(x) for x in
+            (s["name"] or "there", li["title"], size, li["url"], "our address")]
+
+
+def quote_request_text(seller_name: str, item: str, quantity: str, deliver_to: str) -> str:
+    return (f"Hello {seller_name}, we are collecting quotes for {item},"
+            f" quantity {quantity}, delivery to {deliver_to}."
+            f" Please reply with your price per unit, delivery time and minimum order."
+            f" Thank you.")
+
+
+def quote_params(s, li) -> list[str]:
+    """Filled from our database only; no customer name, phone or address."""
+    with db.connect() as conn:
+        it = conn.execute("SELECT name, quantity, unit FROM hunt_items WHERE id = ?",
+                          (li["hunt_item_id"],)).fetchone()
+    item = it["name"] if it else li["title"]
+    qty = f"{it['quantity']:g} {it['unit']}".strip() if it and it["quantity"] else "to be confirmed"
+    return [clean_param(x) for x in
+            (s["name"] or "there", item, qty, li["city"] or "our site")]
+
+
+def send_quote_request(bid: int, seller_id: int, listing_id: int) -> dict:
+    """Logged-in click only. Template first, free-form only inside the 24h window."""
+    import outbound
+    with db.connect() as conn:
+        s = conn.execute("SELECT * FROM sellers WHERE id = ? AND business_id = ?",
+                         (seller_id, bid)).fetchone()
+        li = conn.execute("SELECT * FROM listings WHERE id = ? AND business_id = ?",
+                          (listing_id, bid)).fetchone()
+    if not s or not li:
+        raise ValueError("unknown vendor or listing")
+    if not s["opted_in"]:
+        raise ValueError("vendor has not opted in")
+    if msg := limits_ok(bid, seller_id, listing_id):
+        raise ValueError(msg)
+    hid = li["hunt_item_id"] or li["hunt_id"]
+    params = quote_params(s, li)
+    text = quote_request_text(*params)
+    try:
+        outbound.send_template(digits(s["phone"]), "quote_request_v2", "en", params)
+        _log(bid, seller_id, hid, listing_id, "out", "quote_request_v2", text, status="sent")
+        return {"sent": "template"}
+    except Exception as e:
+        if "template" not in str(e).lower() and "approv" not in str(e).lower():
+            _log(bid, seller_id, hid, listing_id, "out", "quote_request_v2", text,
+                 status="failed", error=str(e))
+            raise ValueError(f"send failed: {e}")
+    with db.connect() as conn:
+        recent = conn.execute(
+            "SELECT id FROM seller_messages WHERE business_id = ? AND seller_id = ?"
+            " AND direction = 'in' AND created_at > datetime('now', '-1 day')",
+            (bid, seller_id)).fetchone()
+    if recent:
+        outbound.send_text(digits(s["phone"]), text)
+        _log(bid, seller_id, hid, listing_id, "out", "", text, status="sent")
+        return {"sent": "free-form (24h window)"}
+    _log(bid, seller_id, hid, listing_id, "out", "quote_request_v2", text,
+         status="waiting", error="template waiting for approval")
+    return {"sent": "none",
+            "note": "Template waiting for approval. Ask the vendor to message you first, then try again.",
+            "ask_from_whatsapp": wa_me_link(s["phone"], text)}
+
+
 def wa_me_link(phone: str, text: str) -> str:
     from urllib.parse import quote
     return f"https://wa.me/{digits(phone)}?text={quote(text)}"
@@ -109,13 +180,14 @@ def limits_ok(bid: int, sid: int, lid: int) -> str:
     with db.connect() as conn:
         n = conn.execute(
             "SELECT COUNT(*) c FROM seller_messages WHERE business_id = ?"
-            " AND seller_id = ? AND listing_id = ? AND direction = 'out'",
+            " AND seller_id = ? AND listing_id = ? AND direction = 'out'"
+            " AND status = 'sent'",  # a failed or waiting message can be retried
             (bid, sid, lid)).fetchone()["c"]
         if n >= 1:
             return "already checked this seller for this listing"
         d = conn.execute(
             "SELECT COUNT(*) c FROM seller_messages WHERE business_id = ?"
-            " AND seller_id = ? AND direction = 'out'"
+            " AND seller_id = ? AND direction = 'out' AND status = 'sent'"
             " AND created_at > datetime('now', '-1 day')",
             (bid, sid)).fetchone()["c"]
         if d >= 5:
@@ -138,21 +210,15 @@ def send_stock_check(bid: int, seller_id: int, listing_id: int) -> dict:
     if msg := limits_ok(bid, seller_id, listing_id):
         raise ValueError(msg)
     hid = li["hunt_item_id"] or li["hunt_id"]
-    with db.connect() as conn:
-        hunt = conn.execute("SELECT size_pref FROM hunts WHERE id = ?",
-                            (li["hunt_id"],)).fetchone()
-    size = (hunt["size_pref"] if hunt else "") or "-"
-    params = [clean_param(x) for x in
-              (s["name"], li["title"], size, li["url"],
-               (li["delivery"] or "our delivery address"))]
+    params = stock_params(s, li)
     try:
-        outbound.send_template(digits(s["phone"]), "stock_check", "en", params)
-        _log(bid, seller_id, hid, listing_id, "out", "stock_check",
+        outbound.send_template(digits(s["phone"]), "stock_check_v2", "en", params)
+        _log(bid, seller_id, hid, listing_id, "out", "stock_check_v2",
              stock_check_text(*params), status="sent")
         return {"sent": "template"}
     except Exception as e:
         if "template" not in str(e).lower() and "approv" not in str(e).lower():
-            _log(bid, seller_id, hid, listing_id, "out", "stock_check",
+            _log(bid, seller_id, hid, listing_id, "out", "stock_check_v2",
                  stock_check_text(*params), status="failed", error=str(e))
             raise ValueError(f"send failed: {e}")
     # Template missing/unapproved: free-form only inside the 24h window.
@@ -167,7 +233,7 @@ def send_stock_check(bid: int, seller_id: int, listing_id: int) -> dict:
         _log(bid, seller_id, hid, listing_id, "out", "",
              text, status="sent")
         return {"sent": "free-form (24h window)"}
-    _log(bid, seller_id, hid, listing_id, "out", "stock_check", text,
+    _log(bid, seller_id, hid, listing_id, "out", "stock_check_v2", text,
          status="waiting", error="template waiting for approval")
     return {"sent": "none",
             "note": "Template waiting for approval",
@@ -289,13 +355,18 @@ def _apply_button(bid: int, s, body: str) -> None:
     if not last:
         return
     norm = body.strip().lower()
-    if norm in ("in stock", "out of stock") and last["template"] == "stock_check":
+    if norm in ("in stock", "out of stock") and last["template"] == "stock_check_v2":
         with db.connect() as conn:
             conn.execute("UPDATE listings SET in_stock = ? WHERE id = ?",
                          ("yes" if norm == "in stock" else "no",
                           last["listing_id"]))
             conn.commit()
-    if last["template"] == "order_request" and norm in ("confirm order", "decline"):
+    if norm == "can't supply" and last["template"] == "quote_request_v2":
+        with db.connect() as conn:
+            conn.execute("UPDATE listings SET in_stock = 'no', verify_note = ? WHERE id = ?",
+                         ("Vendor can't supply this", last["listing_id"]))
+            conn.commit()
+    if last["template"] == "order_request_v2" and norm in ("confirm order", "can't fulfil"):
         import purchases
         purchases.record_seller_decision(
             bid, s["id"], "seller_confirmed" if norm == "confirm order" else "seller_declined")
@@ -469,9 +540,7 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
                     li["whatsapp"],
                     f"Hello, is {li['title'][:80]} still available?")
             return no_seller
-        params = [clean_param(x) for x in
-                  (s["name"], li["title"], "-", li["url"],
-                   (li["delivery"] or "our delivery address"))]
+        params = stock_params(s, li)
         if isinstance(body, dict) and body.get("preview"):
             return {"preview": stock_check_text(*params)}
         import httpx
@@ -484,6 +553,39 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
                 out["ask_from_whatsapp"] = wa_me_link(
                     s["phone"], stock_check_text(*params))
             return out
+        except httpx.HTTPError:
+            return {"sent": "none", "note": "WhatsApp send failed, try again"}
+
+    @app.post("/api/listings/{listing_id}/quote-request")
+    async def quote_request(listing_id: int, request: Request):
+        if denied := require_api_key(request):
+            return denied
+        u, err = need_login(request)
+        if err:
+            return err
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        with db.connect() as conn:
+            li = conn.execute("SELECT * FROM listings WHERE id = ? AND business_id = ?",
+                              (listing_id, u["business_id"])).fetchone()
+            if not li:
+                return api_error("not_found", "no listing", 404)
+            sid = (body.get("seller_id") if isinstance(body, dict) else None) or li["seller_id"]
+            s = conn.execute("SELECT * FROM sellers WHERE id = ? AND business_id = ?",
+                             (sid, u["business_id"])).fetchone() if sid else None
+        if not s:
+            return {"sent": "none", "note": "This vendor hasn't agreed to messages yet."}
+        params = quote_params(s, li)
+        if isinstance(body, dict) and body.get("preview"):
+            return {"preview": quote_request_text(*params)}
+        import httpx
+        import outbound
+        try:
+            return await asyncio.to_thread(send_quote_request, u["business_id"], s["id"], listing_id)
+        except (ValueError, outbound.GraphError) as e:
+            return {"sent": "none", "note": str(e)}
         except httpx.HTTPError:
             return {"sent": "none", "note": "WhatsApp send failed, try again"}
 
@@ -559,7 +661,8 @@ def selfcheck() -> None:
                 conn.execute("INSERT INTO listings (hunt_id, hunt_item_id, business_id,"
                              " url) VALUES (1,1,1,?)", (f"https://s/{i}",))
                 conn.execute("INSERT INTO seller_messages (business_id, seller_id,"
-                             " hunt_id, listing_id, direction) VALUES (1,2,1,?, 'out')", (i,))
+                             " hunt_id, listing_id, direction, status)"
+                             " VALUES (1,2,1,?, 'out', 'sent')", (i,))
             conn.commit()
         try:
             send_stock_check(1, 2, 6)
@@ -614,6 +717,25 @@ def selfcheck() -> None:
         with db.connect() as conn:
             assert conn.execute("SELECT COUNT(*) c FROM sellers WHERE phone = '91444'"
                                 ).fetchone()["c"] == 0
+        # 8. order buttons match the template: "Can't fulfil" declines, and the
+        # tap only counts against the last order_request_v2 send.
+        import purchases
+        seen = []
+        real_decide = purchases.record_seller_decision
+        purchases.record_seller_decision = lambda b, s, d: seen.append(d)
+        try:
+            with db.connect() as conn:
+                conn.execute("INSERT INTO seller_messages (business_id, seller_id,"
+                             " hunt_id, listing_id, direction, template)"
+                             " VALUES (1, 2, 1, 1, 'out', 'order_request_v2')")
+                conn.commit()
+                s2 = conn.execute("SELECT * FROM sellers WHERE id = 2").fetchone()
+            _apply_button(1, s2, "Can't fulfil")
+            assert seen == ["seller_declined"], seen
+            _apply_button(1, s2, "Confirm order")
+            assert seen == ["seller_declined", "seller_confirmed"], seen
+        finally:
+            purchases.record_seller_decision = real_decide
     finally:
         db.DB_PATH = old
     assert calls, "no stubbed send ran: checks skipped"
