@@ -6,10 +6,11 @@ export const dynamic = "force-dynamic";
 export default async function Home({
   searchParams,
 }: {
-  searchParams: { before?: string };
+  searchParams: Promise<{ before?: string }>;
 }) {
+  const { before } = await searchParams;
   const s = await get("/api/stats");
-  const c = await get(searchParams.before ? `/api/calls?before=${searchParams.before}` : "/api/calls");
+  const c = await get(before ? `/api/calls?before=${before}` : "/api/calls");
   if (s.expired || c.expired) return <Expired />;
   return (
     <main>

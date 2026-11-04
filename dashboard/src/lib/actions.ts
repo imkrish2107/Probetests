@@ -22,7 +22,7 @@ export async function login(form: FormData) {
       method: "POST",
       body: JSON.stringify({ email: form.get("email"), password: form.get("password") }),
     });
-    cookies().set("session", data.token, COOKIE);
+    (await cookies()).set("session", data.token, COOKIE);
   } catch (e) {
     return { error: friendly(e) };
   }
@@ -41,7 +41,7 @@ export async function signup(form: FormData) {
         signup_code: form.get("signup_code"),
       }),
     });
-    cookies().set("session", data.token, COOKIE);
+    (await cookies()).set("session", data.token, COOKIE);
   } catch (e) {
     return { error: friendly(e) };
   }
@@ -49,7 +49,7 @@ export async function signup(form: FormData) {
 }
 
 export async function logout() {
-  const token = sessionToken();
+  const token = await sessionToken();
   if (token) {
     try {
       await api("/api/auth/logout", { method: "POST" }, token);
@@ -57,12 +57,12 @@ export async function logout() {
       // clearing the cookie is what matters
     }
   }
-  cookies().delete("session");
+  (await cookies()).delete("session");
   redirect("/login");
 }
 
 export async function saveSetup(form: FormData) {
-  const token = sessionToken();
+  const token = await sessionToken();
   const body = {
     name: form.get("name"),
     timezone: form.get("timezone"),
@@ -84,7 +84,7 @@ export async function saveSetup(form: FormData) {
 export async function bookingMove(form: FormData) {
   const id = form.get("id");
   const date = form.get("date") ?? "";
-  const token = sessionToken();
+  const token = await sessionToken();
   try {
     await api(`/api/bookings/${id}`, {
       method: "PATCH",
@@ -99,7 +99,7 @@ export async function bookingMove(form: FormData) {
 export async function bookingCancel(form: FormData) {
   const id = form.get("id");
   const date = form.get("date") ?? "";
-  const token = sessionToken();
+  const token = await sessionToken();
   try {
     await api(`/api/bookings/${id}`, {
       method: "PATCH",
@@ -113,7 +113,7 @@ export async function bookingCancel(form: FormData) {
 
 export async function taskDone(form: FormData) {
   const id = form.get("id");
-  const token = sessionToken();
+  const token = await sessionToken();
   try {
     await api(`/api/tasks/${id}`, {
       method: "PATCH",
@@ -126,7 +126,7 @@ export async function taskDone(form: FormData) {
 }
 
 export async function callButton(form: FormData) {
-  const token = sessionToken();
+  const token = await sessionToken();
   try {
     await api(`/api/contacts/${form.get("contact_id")}/call-button`, {
       method: "POST",
@@ -139,7 +139,7 @@ export async function callButton(form: FormData) {
 }
 
 export async function aiCallback(form: FormData) {
-  const token = sessionToken();
+  const token = await sessionToken();
   try {
     await api(`/api/contacts/${form.get("contact_id")}/callback`, {
       method: "POST",
@@ -153,7 +153,7 @@ export async function aiCallback(form: FormData) {
 
 export async function updateContact(form: FormData) {
   const id = form.get("id");
-  const token = sessionToken();
+  const token = await sessionToken();
   const tags = String(form.get("tags") ?? "")
     .split(",")
     .map((t) => t.trim())

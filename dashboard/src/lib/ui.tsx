@@ -3,7 +3,7 @@ import { api, sessionToken, ApiError } from "./api";
 // GET that turns an expired session into {expired} instead of a 500.
 export async function get(path: string) {
   try {
-    return { data: await api(path, undefined, sessionToken()) };
+    return { data: await api(path, undefined, await sessionToken()) };
   } catch (e) {
     if (e instanceof ApiError && e.status === 401) return { expired: true as const };
     throw e;

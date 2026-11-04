@@ -4,8 +4,9 @@ import { callButton } from "@/lib/actions";
 export const dynamic = "force-dynamic";
 
 // One call: transcript, summary, bookings/tasks/messages, cost + send call button.
-export default async function CallPage({ params }: { params: { id: string } }) {
-  const { data: call, expired } = await get(`/api/calls/${params.id}`);
+export default async function CallPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const { data: call, expired } = await get(`/api/calls/${id}`);
   if (expired || !call) return <Expired />;
   return (
     <main>
@@ -23,7 +24,7 @@ export default async function CallPage({ params }: { params: { id: string } }) {
           {Number(call.cost_usd).toFixed(4)}
         </p>
         {call.contact_id && (
-          <form action={callButton}>
+          <form action={async (fd) => { await callButton(fd); }}>
             <input type="hidden" name="contact_id" value={call.contact_id} />
             <button className="btn" type="submit">
               Send call button

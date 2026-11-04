@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   let name = "";
   try {
-    const me = await api("/api/auth/me", undefined, sessionToken());
+    const me = await api("/api/auth/me", undefined, await sessionToken());
     name = me.user.name;
   } catch {
     // middleware keeps logged-out users away; expired sessions 401 on page fetch
@@ -22,7 +22,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <a href="/setup">Setup</a>
         <span className="spacer" />
         <span>{name}</span>
-        <form action={logout}>
+        <form action={async () => { await logout(); }}>
           <button type="submit">Log out</button>
         </form>
       </nav>

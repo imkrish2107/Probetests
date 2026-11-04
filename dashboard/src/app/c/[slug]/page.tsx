@@ -1,8 +1,9 @@
 import { get } from "@/lib/ui";
 
 // Public "Call us" page. No login; QR code arrives with the qrcode dep.
-export default async function CallPage({ params }: { params: { slug: string } }) {
-  const { data: biz } = await get(`/api/public/businesses/${params.slug}`);
+export default async function CallPage({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params;
+  const { data: biz } = await get(`/api/public/businesses/${slug}`);
   if (!biz) {
     return (
       <main>

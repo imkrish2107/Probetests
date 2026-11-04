@@ -7,9 +7,10 @@ export const dynamic = "force-dynamic";
 export default async function TasksPage({
   searchParams,
 }: {
-  searchParams: { status?: string };
+  searchParams: Promise<{ status?: string }>;
 }) {
-  const status = searchParams.status === "done" ? "done" : "open";
+  const { status: statusParam } = await searchParams;
+  const status = statusParam === "done" ? "done" : "open";
   const { data, expired } = await get(`/api/tasks?status=${status}`);
   if (expired || !data) return <Expired />;
   return (
@@ -33,12 +34,12 @@ export default async function TasksPage({
             </p>
             {status === "open" && (
               <>
-                <form action={taskDone}>
+                <form action={async (fd) => { await taskDone(fd); }}>
                   <input type="hidden" name="id" value={t.id} />
                   <input className="input" name="note" placeholder="Quote / update for customer" required />
                   <button type="submit">Mark done</button>
                 </form>
-                <form action={callButton}>
+                <form action={async (fd) => { await callButton(fd); }}>
                   <input type="hidden" name="contact_id" value={t.contact?.id} />
                   <button type="submit">Send call button</button>
                 </form>

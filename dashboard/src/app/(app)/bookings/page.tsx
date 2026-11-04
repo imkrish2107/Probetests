@@ -7,9 +7,10 @@ export const dynamic = "force-dynamic";
 export default async function BookingsPage({
   searchParams,
 }: {
-  searchParams: { date?: string };
+  searchParams: Promise<{ date?: string }>;
 }) {
-  const date = searchParams.date ?? new Date().toISOString().slice(0, 10);
+  const { date: dateParam } = await searchParams;
+  const date = dateParam ?? new Date().toISOString().slice(0, 10);
   const { data, expired } = await get(`/api/bookings?date=${date}`);
   if (expired || !data) return <Expired />;
   return (
@@ -30,13 +31,13 @@ export default async function BookingsPage({
             </p>
             {b.status !== "cancelled" && (
               <>
-                <form action={bookingMove}>
+                <form action={async (fd) => { await bookingMove(fd); }}>
                   <input type="hidden" name="id" value={b.id} />
                   <input type="hidden" name="date" value={date} />
                   <input className="input" type="datetime-local" name="slot" required />
                   <button type="submit">Move</button>
                 </form>
-                <form action={bookingCancel}>
+                <form action={async (fd) => { await bookingCancel(fd); }}>
                   <input type="hidden" name="id" value={b.id} />
                   <input type="hidden" name="date" value={date} />
                   <button type="submit">Cancel</button>

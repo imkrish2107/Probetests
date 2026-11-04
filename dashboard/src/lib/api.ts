@@ -10,8 +10,8 @@ export class ApiError extends Error {
   }
 }
 
-export function sessionToken(): string | undefined {
-  return cookies().get("session")?.value;
+export async function sessionToken(): Promise<string | undefined> {
+  return (await cookies()).get("session")?.value;
 }
 
 export async function api(path: string, init?: RequestInit, token?: string) {

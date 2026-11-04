@@ -4,8 +4,9 @@ import { updateContact, callButton, aiCallback } from "@/lib/actions";
 export const dynamic = "force-dynamic";
 
 // Contact detail: editable stage/tags/notes, full history, call buttons.
-export default async function ContactPage({ params }: { params: { id: string } }) {
-  const { data: c, expired } = await get(`/api/contacts/${params.id}`);
+export default async function ContactPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const { data: c, expired } = await get(`/api/contacts/${id}`);
   if (expired || !c) return <Expired />;
   return (
     <main>
@@ -17,7 +18,7 @@ export default async function ContactPage({ params }: { params: { id: string } }
           {c.phone || "no number"} · {c.calls_count} calls · permission:{" "}
           {c.call_permission ? "yes" : "no"}
         </p>
-        <form action={updateContact}>
+        <form action={async (fd) => { await updateContact(fd); }}>
           <input type="hidden" name="id" value={c.id} />
           <label>
             Name
@@ -42,14 +43,14 @@ export default async function ContactPage({ params }: { params: { id: string } }
           </label>
           <button type="submit">Save</button>
         </form>
-        <form action={callButton}>
+        <form action={async (fd) => { await callButton(fd); }}>
           <input type="hidden" name="contact_id" value={c.id} />
           <button className="btn" type="submit">
             Send call button
           </button>
         </form>
         {c.call_permission ? (
-          <form action={aiCallback}>
+          <form action={async (fd) => { await aiCallback(fd); }}>
             <input type="hidden" name="contact_id" value={c.id} />
             <button type="submit">AI call back</button>
           </form>
