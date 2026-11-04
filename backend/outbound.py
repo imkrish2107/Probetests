@@ -131,6 +131,27 @@ def terminate_call(call_id: str) -> dict:
         "messaging_product": "whatsapp", "call_id": call_id, "action": "terminate"})
 
 
+def send_text(to: str, text: str) -> dict:
+    """Free-form text; needs the 24h service window open."""
+    token, pnid = creds()
+    return _call("POST", f"{pnid}/messages", token, json={
+        "messaging_product": "whatsapp", "recipient_type": "individual",
+        "to": to, "type": "text", "text": {"body": text}})
+
+
+def send_buttons(to: str, body: str, buttons: list[tuple[str, str]]) -> dict:
+    """Up to 3 quick-reply buttons. Free-form; needs the open window."""
+    token, pnid = creds()
+    return _call("POST", f"{pnid}/messages", token, json={
+        "messaging_product": "whatsapp", "recipient_type": "individual",
+        "to": to, "type": "interactive",
+        "interactive": {"type": "button", "body": {"text": body},
+                        "action": {"buttons": [
+                            {"type": "reply", "reply": {"id": i, "title": t}}
+                            for i, t in buttons[:3]]}}})
+    return item.get("direction") == "BUSINESS_INITIATED"
+
+
 def is_outbound(item: dict) -> bool:
     return item.get("direction") == "BUSINESS_INITIATED"
 
@@ -174,7 +195,12 @@ def selfcheck() -> None:
     with db.connect() as conn:  # age it out, keep the 7-day window
         conn.execute("UPDATE outbound_log SET at = datetime('now', '-2 days')")
         conn.commit()
+    ok, reason = limits_ok()
+    assert ok, f"one request 2 days ago must pass: {reason}"
     log("request")
+    with db.connect() as conn:  # two requests inside 7 days, none inside 24h
+        conn.execute("UPDATE outbound_log SET at = datetime('now', '-2 days')")
+        conn.commit()
     ok, reason = limits_ok()
     assert not ok and "7 days" in reason, reason  # 2 requests per 7 days
     with db.connect() as conn:

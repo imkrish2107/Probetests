@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
@@ -13,6 +14,7 @@ import call_bot
 import db
 import httpx
 import outbound
+import store
 from argon2.exceptions import HashingError
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, Query, Request, Response
@@ -34,6 +36,12 @@ async def lifespan(app: FastAPI):
                 automation.scheduler_tick()
             except Exception as e:
                 log.warning("scheduler tick failed: %s", e)
+            try:
+                import store as _store_tick
+                _store_tick.ensure_tables()
+                _store_tick.remind_pending()
+            except Exception as e:
+                log.warning("store tick failed: %s", e)
 
     task = asyncio.create_task(loop())
     try:  # shared HTTP session for the voice client; voice stays off without it
@@ -263,6 +271,8 @@ def _handle_inbound(business_id: int, item: dict) -> None:
     if not wa_id:
         return
     cid = _ensure_contact(business_id, wa_id, "")
+    if _handle_store_message(business_id, wa_id, cid, item):
+        return
     import datetime as dt
     day_ago = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)).isoformat()
     with db.connect() as conn:
@@ -273,6 +283,121 @@ def _handle_inbound(business_id: int, item: dict) -> None:
     with db.connect() as conn:
         conn.execute("UPDATE contacts SET auto_reply_at = datetime('now') WHERE id = ?", (cid,))
         conn.commit()
+
+
+def _handle_store_message(business_id: int, wa_id: str, cid: int, item: dict) -> bool:
+    """ORDER links and order button taps. True = handled, skip the auto-reply."""
+    if item.get("type") == "interactive":
+        btn = ((item.get("interactive") or {}).get("button_reply") or {}).get("id", "")
+        m = re.match(r"(confirm|change|cancel)_(\d+)$", btn)
+        if not m:
+            return False
+        action = {"confirm": "confirmed", "change": "change_requested",
+                  "cancel": "cancelled"}[m.group(1)]
+        with db.connect() as conn:
+            row = conn.execute("SELECT phone FROM contacts WHERE id = ?", (cid,)).fetchone()
+        r = store.order_action(business_id, int(m.group(2)),
+                               (row["phone"] if row else "") or wa_id, action)
+        if "status" not in r:
+            return True  # wrong phone or stale tap: stay silent, no oracle
+        line = {"confirmed": "Confirmed! Pay cash on delivery. Reply here for changes.",
+                "change_requested": "Noted — the team will call you about the change.",
+                "cancelled": "Cancelled. Hope to see you again."}[r["status"]]
+        try:
+            outbound.send_text(wa_id, line)
+        except Exception:
+            stub_send("order_update", business_id, cid, body=line)
+        return True
+    body = ((item.get("text") or {}).get("body") or "").strip()
+    if re.match(r"(?i)^order\s+\d+\s*$", body):
+        return store.handle_order_link(business_id, wa_id, body) is not None
+    return False
+
+
+# ---- ESCAPE public storefront API (no login; strict validation) ----
+
+@app.get("/api/public/products")
+def public_products(slug: str):
+    try:
+        return {"items": store.list_products(slug)}
+    except ValueError:
+        return api_error("not_found", "unknown store", 404)
+
+
+@app.post("/api/public/orders")
+async def public_order(request: Request):
+    try:
+        b = await request.json()
+    except Exception:
+        return api_error("invalid", "bad json", 422)
+    try:
+        store.ensure_tables()
+        return store.create_order(b.get("slug", ""), b.get("items", []), b.get("name", ""),
+                                  b.get("phone", ""), b.get("address", ""),
+                                  bool(b.get("call_consent")))
+    except ValueError as e:
+        return api_error("invalid", str(e), 422)
+
+
+@app.get("/api/public/orders/{order_id}")
+def public_order_status(order_id: int, slug: str, phone: str):
+    try:
+        o = store.get_order_public(slug, order_id, phone)
+    except ValueError:
+        return api_error("not_found", "unknown store", 404)
+    if not o:
+        return api_error("not_found", "no such order", 404)
+    return {"id": o["id"], "status": o["status"],
+            "total": store.inr(o["items_total_paise"]), "items": o["items"]}
+
+
+@app.post("/api/public/orders/{order_id}/action")
+async def public_order_action(order_id: int, request: Request):
+    try:
+        b = await request.json()
+    except Exception:
+        return api_error("invalid", "bad json", 422)
+    try:
+        biz = store._biz_by_slug(b.get("slug", ""))
+    except ValueError:
+        return api_error("not_found", "unknown store", 404)
+    r = store.order_action(biz["id"], order_id, b.get("phone", ""),
+                           b.get("action", ""), b.get("note", ""))
+    if "error" in r:
+        return api_error("invalid", r["error"], 422)
+    return r
+
+
+@app.post("/api/public/tryon")
+async def public_tryon(request: Request):
+    if not store.TRYON_ENABLED:
+        return api_error("disabled", "try-on is off", 404)
+    form = await request.form()
+    if form.get("consent") not in ("1", "true", "yes", "on"):
+        return api_error("invalid", "consent required", 400)
+    up = form.get("photo")
+    if up is None or not getattr(up, "filename", ""):
+        return api_error("invalid", "photo required", 400)
+    data = await up.read()
+    if store.tryon_ratelimited(request.client.host if request.client else "?"):
+        return api_error("rate_limited", "too many previews, try later", 429)
+    try:
+        tid, _ = store.tryon_preview(data, up.content_type or "",
+                                     str(form.get("product") or ""))
+    except store.TryonError as e:
+        return api_error("invalid", str(e), 400)
+    except Exception:
+        log.warning("tryon failed", exc_info=True)
+        return api_error("failed", "preview failed, try another photo", 502)
+    return {"id": tid}
+
+
+@app.get("/api/public/tryon/{tid}")
+def public_tryon_get(tid: str):
+    out = store.tryon_get(tid)
+    if not out:
+        return api_error("not_found", "preview expired", 404)
+    return Response(content=out, media_type="image/jpeg")
 
 
 @app.post("/api/auth/signup", status_code=201)
