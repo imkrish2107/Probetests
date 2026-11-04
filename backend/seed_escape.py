@@ -1,6 +1,6 @@
 """One-time seed: ESCAPE business + 6 products. Run once on the VPS:
 
-  cd /home/kautilya/Probetests/backend && .venv/bin/python seed_escape.py
+  cd /home/wa/Probetests/backend && .venv/bin/python seed_escape.py
 
 Idempotent: re-running only fills gaps. Photos must already be in
 store/public/products/ (see filenames below).
@@ -38,6 +38,16 @@ def main() -> None:
     pnid = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
     disp = os.getenv("WHATSAPP_DISPLAY_NUMBER", "")
     with db.connect() as conn:
+        if pnid:
+            # wa_phone_number_id is UNIQUE: pull it off whoever holds it first,
+            # same transaction and before our upsert, so the move can never
+            # strand two owners or break our own INSERT.
+            loser = conn.execute("SELECT slug FROM businesses WHERE wa_phone_number_id = ?"
+                                 " AND slug <> 'escape'", (pnid,)).fetchone()
+            if loser:
+                conn.execute("UPDATE businesses SET wa_phone_number_id = '' WHERE slug = ?",
+                             (loser["slug"],))
+                print(f"moved wa_phone_number_id off '{loser['slug']}'")
         row = conn.execute("SELECT id FROM businesses WHERE slug = 'escape'").fetchone()
         if row:
             bid = row["id"]
@@ -76,5 +86,31 @@ def main() -> None:
         print("Set wa_display_number on the dashboard setup page (your WhatsApp number, digits only).")
 
 
-if __name__ == "__main__":
+def selfcheck() -> None:
+    """Offline: the pnid move steals from the loser in one transaction (temp DB)."""
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    db.DB_PATH = db.Path(tmp) / "t.db"
+    os.environ["WHATSAPP_PHONE_NUMBER_ID"] = "15550009999"
+    os.environ["WHATSAPP_DISPLAY_NUMBER"] = "15550009999"
+    db.init_db()
+    with db.connect() as conn:
+        conn.execute("INSERT INTO businesses (slug, name, wa_phone_number_id)"
+                     " VALUES ('cafe','Cafe','15550009999')")
+        conn.commit()
     main()
+    with db.connect() as conn:
+        rows = {r["slug"]: r["wa_phone_number_id"] for r in conn.execute(
+            "SELECT slug, wa_phone_number_id FROM businesses")}
+    assert rows["escape"] == "15550009999", rows
+    assert rows["cafe"] == "", rows  # loser cleared, UNIQUE holds
+    main()  # idempotent rerun keeps it
+    print("seed selfcheck: PASS")
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "selfcheck":
+        selfcheck()
+    else:
+        main()
