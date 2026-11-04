@@ -12,6 +12,7 @@ import automation
 import call_bot
 import db
 import httpx
+import outbound
 from argon2.exceptions import HashingError
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, Query, Request, Response
@@ -175,6 +176,14 @@ async def _maybe_voice_call(event: dict, raw: bytes, sig: str) -> bool:
                                    (pnid,)).fetchone()
             if not row:
                 log.info("webhook: unknown phone_number_id %s, ignored", pnid)
+                continue
+            items = [c for c in (value.get("calls") or []) if isinstance(c, dict)]
+            if items and all(outbound.is_outbound(i) for i in items):
+                # Our own outbound test/call: stash SDP answers, score the
+                # terminate event. Never send these into the inbound pipeline.
+                for i in items:
+                    outbound.handle_outbound_item(i, log)
+                handled = True
                 continue
             try:
                 import voice_call
