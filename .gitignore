@@ -13,6 +13,7 @@ setup/*_api.txt
 backups/
 backend/data/
 backend/hunt_test/
+backend/boq_test/*.png
 .next/
 .netlify/
 *.log
