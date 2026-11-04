@@ -1,9 +1,16 @@
 import { get, Expired } from "@/lib/ui";
-import { createHunt } from "@/lib/actions";
+import DropForm from "./dropform";
 
 export const dynamic = "force-dynamic";
 
-// Hunts: start a hunt (product photo or house plan), then past hunts.
+const AGENTS = [
+  "Spotter", "Finder", "Checker", "Matcher", "Ranker", "Messenger",
+  "Picker", "Buyer", "Tracker", "Plan Reader", "Quantity Surveyor",
+  "House Artist", "Quote Caller",
+];
+
+// Hunts: start a hunt (product photo or house plan), the latest hunt's agent
+// panel with real state from hunt_steps, then past hunts.
 export default async function HuntsPage({
   searchParams,
 }: {
@@ -13,6 +20,15 @@ export default async function HuntsPage({
   const h = await get("/api/hunts");
   if (h.expired) return <Expired />;
   const construction = (flow ?? "shopping") === "construction";
+  const items = h.data.items ?? [];
+  // Agent panel: real steps of the latest hunt (list endpoint has no steps).
+  let panel: any = null;
+  if (items.length > 0) {
+    const d = await get(`/api/hunts/${items[0].id}`);
+    if (!d.expired && d.data) panel = d.data;
+  }
+  const byAgent: Record<string, any> = {};
+  for (const s of panel?.steps ?? []) byAgent[s.agent] = s;
   return (
     <main>
       <div className="card">
@@ -22,61 +38,37 @@ export default async function HuntsPage({
           <a href="/hunts?flow=construction">Plan a house</a>
         </p>
         {error && <p className="pill bad">{error}</p>}
-        <form action={async (fd) => { "use server"; await createHunt(fd); }}>
-          <input type="hidden" name="flow" value={construction ? "construction" : "shopping"} />
-          <label>
-            {construction ? "Floor plan (photo or PDF, max 8 MB)" : "Shirt photo (max 8 MB)"}
-            <input className="input" type="file" name="file" accept="image/*,.pdf" required />
-          </label>
-          {!construction && (
-            <>
-              <label>
-                Size <span className="norm">(optional)</span>
-                <input className="input" name="size" maxLength={10} />
-              </label>
-              <label>
-                Budget ₹ <span className="norm">(optional)</span>
-                <input className="input" name="budget" type="number" min={0} />
-              </label>
-            </>
-          )}
-          {construction && (
-            <>
-              <label>
-                City
-                <input className="input" name="city" maxLength={80} required />
-              </label>
-              <label>
-                Floors
-                <input className="input" name="floors" type="number" min={1} defaultValue={1} />
-              </label>
-              <label>
-                Floor height (ft)
-                <input className="input" name="floor_height_ft" type="number" min={8} defaultValue={10} />
-              </label>
-              <label>
-                Finish
-                <select className="input" name="finish" defaultValue="standard">
-                  <option value="basic">Basic</option>
-                  <option value="standard">Standard</option>
-                  <option value="premium">Premium</option>
-                </select>
-              </label>
-              <label>
-                Built-up sqft <span className="norm">(blank estimates from rooms × 1.2)</span>
-                <input className="input" name="builtup_sqft" type="number" min={0} />
-              </label>
-            </>
-          )}
-          <button className="btn" type="submit">
-            {construction ? "Check the plan" : "Start the hunt"}
-          </button>
-        </form>
+        <DropForm flow={construction ? "construction" : "shopping"} />
       </div>
+      {panel && (
+        <div className="card">
+          <h2>
+            Agents — latest hunt{" "}
+            <a href={`/hunts/${panel.hunt.id}`}>#{panel.hunt.id}</a>{" "}
+            <span className="pill">{panel.hunt.status}</span>
+          </h2>
+          <ul className="steps">
+            {AGENTS.map((a) => {
+              const s = byAgent[a];
+              return (
+                <li key={a}>
+                  <strong>{a}</strong>{" "}
+                  <span
+                    className={`pill ${s?.state === "done" ? "ok" : s?.state === "failed" ? "bad" : ""}`}
+                  >
+                    {s?.state ?? "waiting"}
+                  </span>{" "}
+                  {s?.detail ?? ""} <span className="muted">{s?.at ?? ""}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
       <div className="card">
         <h2>Past hunts</h2>
-        {h.data.items.length === 0 && <p>No hunts yet.</p>}
-        {h.data.items.map((x: any) => (
+        {items.length === 0 && <p>No hunts yet.</p>}
+        {items.map((x: any) => (
           <p key={x.id}>
             <a href={`/hunts/${x.id}`}>
               #{x.id} {x.flow === "construction" ? "House" : "Product"}

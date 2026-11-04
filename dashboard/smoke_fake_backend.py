@@ -48,7 +48,10 @@ class H(BaseHTTPRequestHandler):
                                         "role": "owner"},
                                "business": {"id": 1, "name": "B", "slug": "b"}})
         if p == "/api/hunts":
-            return self._send({"items": []})
+            return self._send({"items": [{"id": 1, "flow": "shopping",
+                                           "status": "done", "searches_used": 2,
+                                           "cost_usd": 0.01,
+                                           "top_reason": "Best verified price"}]})
         if p == "/api/hunts/1":
             return self._send(HUNT)
         if p == "/api/hunts/1/photo":

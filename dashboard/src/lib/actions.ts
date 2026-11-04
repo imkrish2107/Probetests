@@ -202,7 +202,7 @@ export async function login(form: FormData) {
   } catch (e) {
     return { error: friendly(e) };
   }
-  redirect("/");
+  redirect("/hunts");
 }
 
 export async function signup(form: FormData) {

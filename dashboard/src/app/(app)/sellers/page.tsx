@@ -17,11 +17,11 @@ export default async function SellersPage({
   return (
     <main>
       <div className="card">
-        <h1>Sellers</h1>
+        <h1>Vendors</h1>
         {error && <p className="pill bad">{error}</p>}
         <p>
-          We message only sellers you add here with the opt-in box ticked.
-          Sellers you find on listings get an invite link from your own
+          We message only vendors you add here with the opt-in box ticked.
+          Vendors you find on listings get an invite link from your own
           WhatsApp instead — never a message from us.
         </p>
         <table className="ledger">
@@ -57,7 +57,7 @@ export default async function SellersPage({
       </div>
 
       <div className="card">
-        <h2>Add a seller</h2>
+        <h2>Add a vendor</h2>
         <form action={async (fd) => { "use server"; await addSeller(fd); }}>
           <label>
             Name
@@ -75,13 +75,13 @@ export default async function SellersPage({
             </select>
           </label>
           <label>
-            <input type="checkbox" name="agreed" required /> This seller agreed to
+            <input type="checkbox" name="agreed" required /> This vendor agreed to
             receive WhatsApp messages from us.
           </label>
           <br />
           <br />
           <button className="btn" type="submit">
-            Add seller
+            Add vendor
           </button>
         </form>
       </div>

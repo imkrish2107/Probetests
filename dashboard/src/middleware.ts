@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-// No session cookie -> /login. Logged in + visiting /login|/signup -> /.
+// No session cookie -> /login. Logged in + visiting /login|/signup -> /hunts.
 export function middleware(req: NextRequest) {
   const session = req.cookies.get("session")?.value;
   const path = req.nextUrl.pathname;
@@ -11,7 +11,7 @@ export function middleware(req: NextRequest) {
     return NextResponse.redirect(new URL("/login", req.url));
   }
   if (session && isAuth) {
-    return NextResponse.redirect(new URL("/", req.url));
+    return NextResponse.redirect(new URL("/hunts", req.url));
   }
   return NextResponse.next();
 }

@@ -17,3 +17,6 @@ backend/boq_test/*.png
 .next/
 .netlify/
 *.log
+
+# Part G phone test not done: keep the draft caller out of the repo.
+backend/quote_call.py
