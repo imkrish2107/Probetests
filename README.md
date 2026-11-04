@@ -1,65 +1,84 @@
-# Probetests — ESCAPE store on a WhatsApp voice agent
+# Agent dashboard — AI shops for you, on WhatsApp
 
-Multilingual WhatsApp AI calling agent (Meta models end to end) with a clothing
-store on top. Brand: **ESCAPE**. Cash on delivery only.
+One logged-in dashboard where agents shop for the user. Two flows on one
+shared engine: **shopping** (drop a photo, get verified listings, ask the
+seller, place an order, track it) and **construction** (floor plan → room
+check → BOQ → concept house image → approval → vendor search → calls →
+compare). Payment stays user↔seller, cash on delivery; the app never takes or
+stores card, bank or UPI details, and never logs into seller sites.
 
 ## How it works
 
-1. Customer browses the storefront (`store/`, Next.js), tries a garment on a live
-   camera preview, and orders. Checkout needs name, phone, address and consent
-   to a confirmation call.
-2. After ordering, the customer opens WhatsApp with a link prefilled with
-   `ORDER <id>`. If the sender matches the order phone, the server asks for call
-   permission and sends Confirm / Change / Cancel buttons; an AI call confirms
-   items, total, address and phone.
-3. Support calls: the AI asks for the order phone, reads back the last 4 digits,
-   texts a 6-digit OTP to the phone on the order, and only then answers queries.
+**Shopping.** Photo in → Spotter (colour, garment, pattern, fabric) → Finder
+searches (≤3, ≤12 candidates) → Checker verifies price/stock in the page, JSON-LD
+or a confirmed quote → Ranker picks best verified price first. Ask-the-seller
+shows the exact message before Send. Place order is a confirmation screen
+(item, seller, price, delivery, name/address from Setup); the seller gets the
+address only on Confirm. Picker picks cheapest/fastest/arrive-by delivery,
+Buyer rejects a stale price or seller, Tracker chases confirmed orders every
+6 hours and needs eyes after 3 unanswered reminders.
+
+**Construction.** Plan in → Plan Reader extracts rooms (user corrects, per-room
+accuracy shown) → Quantity Surveyor builds a BOQ in plain code (whole-building
+per-sqft rates +7.5% wastage, tiles +10%, paint by perimeter) → House Artist
+(Muse Image, ≤5/hunt, labelled concept-only) → user Approves BOQ + image by
+hash (any edit clears approval, vendor search/calls refuse without it) →
+vendor search (≤10 items, 20 searches, 8 vendors/item, city in the query) →
+Quote Caller → Compare (Best/Cheapest per item, running total, no house total
+until all quoted).
+
+**Safety.** Untrusted page/seller text never picks recipients or prices — only
+code acts, from DB values, after a logged-in click. Only opted-in sellers are
+messaged (STOP flips opt-in off instantly); everyone else gets an invite link
+from the user's own WhatsApp. Pages refuse to run before robots/captcha/login,
+fetch politely (10 s, 2 MB, ≤3 redirects), and never save others' images.
 
 ## Run
 
-Backend (Python 3.12, on the VPS as `wa-backend`):
+Backend (Python 3.12, git-ignored `.venv`):
 
 ```bash
 cd backend && .venv/bin/pip install -r requirements.txt
-.venv/bin/python store.py selfcheck && .venv/bin/python agent.py selfcheck
-.venv/bin/python outbound.py selfcheck && .venv/bin/python voice_call.py selfcheck
-.venv/bin/python seed_escape.py   # one-time: ESCAPE business + products
-systemctl restart wa-backend
+.venv/bin/python purchases.py selfcheck && .venv/bin/python sellers.py selfcheck
 ```
 
-Storefront:
+Dashboard (Next.js, ledger styling, no tokens in HTML):
 
 ```bash
-cd store && npm install && npm run build && npm start
-# NEXT_PUBLIC_API_BASE=https://<api-domain> npm run build   # for production
+cd dashboard && npm install && npm run build && npm start
 ```
 
-## Built during the event (STORE_BUILD.md)
+Keys come only from `backend/.env` (never committed, never printed — checks
+print only which names are empty).
 
-- Phase 1: `backend/outbound_test.py` — business-initiated call probe (permission,
-  SDP offer, MMS line, terminate) with coded rate limits.
-- Phase 2: products/orders tables, public order API, `ORDER <id>` link handling,
-  confirmation agent + tools, 30-min reminder → `needs_followup`.
-- Phase 3: OTP support gate (hashed, 5-min, single-use, 3 attempts, 3 sends/hour,
-  same reply for unknown numbers, tools gated on verify).
-- Phase 4: `POST /api/public/tryon` — live browser frame in, preview out;
-  consent required, 8 MB cap, metadata stripped, in-memory 1h only.
-  Photo moderation is a known gap (needs a vision check before public).
-- Phase 5: storefront — home, collection, product + fitting room, cart +
-  checkout, order confirmation, order status.
+## Deploy (VPS, as root on hal-server; `sudo` is broken there)
 
-Fallbacks in use: order confirmation currently goes over WhatsApp buttons (the
-AI confirmation call needs the outbound-audio bridge, built after the call probe
-is green on a real phone). `TRYON_ENABLED=false` hides try-on.
+```bash
+cd /home/wa/Probetests && git pull
+cd backend && .venv/bin/python purchases.py selfcheck && .venv/bin/python sellers.py selfcheck
+systemctl restart wa-backend && systemctl is-active wa-backend
+```
+
+## Status
+
+- Live in code: hunts, BOQ, house image + approval gate, vendor search,
+  purchases/Picker/Buyer/Tracker, full dashboard (390 px → 1440 px).
+- Fallbacks in use: vendors get `quote_request` on WhatsApp and the Compare
+  table links `tel:`/invite instead of AI calls — `backend/quote_call.py` stays
+  out of the repo until the phone test passes.
+- Not yet proven on a real phone: the call probe (Part G), one shopping hunt,
+  one read-plan with per-room accuracy, one house image, one 2-item vendor
+  search. Nothing above is marked passed until real output is seen.
+
+## Built during the event (AGENT_DASH_BUILD.md, CONSTRUCTION_BUILD.md)
+
+Parts D–G: BOQ in plain code with gates and CSV; House Artist + approval hash;
+vendor search per BOQ item; outbound call plumbing with per-vendor limits.
+Part J: dashboard for both flows. Part I: orders end to end.
 
 ## Third-party code and licences
 
-- `pipecat-ai` (BSD-2), `transformers` + `torch` CPU (Apache-2), `aiortc` (BSD),
-  `FastAPI`/`uvicorn`/`httpx` (BSD/MIT), `argon2-cffi` (MIT), Next.js/React (MIT),
-  Tailwind CSS (MIT).
-- Voices: Meta MMS `facebook/mms-tts-*` (CC-BY-NC — demo only, replace to sell).
-- Models: Muse Spark 1.3 (LLM + tools), Muse Voice Transcribe 1.0 (STT),
-  Muse Image 1.0 (try-on edits) — Meta Model API.
-- Product photos: Unsplash free-licence library, files in
-  `store/public/products/`. Try-on previews are generated images, deleted within
-  an hour, never committed.
+FastAPI/uvicorn/httpx (BSD/MIT), Next.js/React (MIT). Models, all Meta:
+`muse-spark-1.3`, `sam-3.1`, `muse-voice-transcribe-1.0`,
+`facebook/mms-tts-*` (CC-BY-NC voices — demo only), `muse-image-1.0`.
+No other search or AI APIs.
