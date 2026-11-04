@@ -18,6 +18,7 @@ import store
 from argon2.exceptions import HashingError
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from whatsapp import iter_value_items, verify_signature
@@ -83,6 +84,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+# The storefront is the only browser client; same-origin + STORE_ORIGIN only.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in os.getenv("STORE_ORIGIN", "").split(",") if o.strip()],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 _templates_cache: dict = {"at": 0.0, "items": []}
 
@@ -342,13 +350,15 @@ async def public_order(request: Request):
 @app.get("/api/public/orders/{order_id}")
 def public_order_status(order_id: int, slug: str, phone: str):
     try:
+        biz = store._biz_by_slug(slug)
         o = store.get_order_public(slug, order_id, phone)
     except ValueError:
         return api_error("not_found", "unknown store", 404)
     if not o:
         return api_error("not_found", "no such order", 404)
     return {"id": o["id"], "status": o["status"],
-            "total": store.inr(o["items_total_paise"]), "items": o["items"]}
+            "total": store.inr(o["items_total_paise"]), "items": o["items"],
+            "whatsapp": store.wa_link(biz, o["id"])}
 
 
 @app.post("/api/public/orders/{order_id}/action")
@@ -1123,3 +1133,40 @@ async def delete_user(user_id: int, request: Request):
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
         conn.commit()
     return Response(status_code=204)
+
+
+def selfcheck() -> None:
+    """Offline: CORS locked down, order-status GET carries the business wa link."""
+    import tempfile
+    from fastapi.testclient import TestClient
+    mw = [m for m in app.user_middleware if m.cls.__name__ == "CORSMiddleware"]
+    assert mw, "CORSMiddleware missing"
+    assert mw[0].kwargs.get("allow_origins") != ["*"], "CORS must not be wide open"
+    tmp = tempfile.mkdtemp()
+    db.DB_PATH = db.Path(tmp) / "t.db"
+    db.init_db()
+    store.ensure_tables()
+    with db.connect() as conn:
+        conn.execute("INSERT INTO businesses (slug, name, wa_display_number) VALUES (?,?,?)",
+                     ("escape", "ESCAPE", "15550001111"))
+        conn.execute("INSERT INTO products (business_id, slug, name, price_paise)"
+                     " VALUES (1,'tee','Tee',99900)")
+        conn.commit()
+    o = store.create_order("escape", [{"product_id": 1, "qty": 1}], "Ab",
+                           "+911234567890", "12 Main St, Kochi", True)
+    c = TestClient(app, raise_server_exceptions=False)
+    r = c.get(f"/api/public/orders/{o['id']}",
+              params={"slug": "escape", "phone": "+911234567890"})
+    assert r.status_code == 200, r.text
+    assert r.json()["whatsapp"] == "https://wa.me/15550001111?text=ORDER%20" + str(o["id"]), r.json()
+    r = c.get("/health", headers={"Origin": "https://evil.example"})
+    assert "access-control-allow-origin" not in {k.lower() for k in r.headers}, dict(r.headers)
+    print("main selfcheck: PASS")
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "selfcheck":
+        selfcheck()
+    else:
+        print("run with uvicorn: uvicorn main:app --host 0.0.0.0 --port 8000")

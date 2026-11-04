@@ -14,8 +14,8 @@ export default async function Home() {
             Clothes for leaving town.
           </h1>
           <p className="mt-4 max-w-md">
-            Heavy cotton, real denim, nothing shiny. Cash on delivery, and a person on
-            WhatsApp confirms every order before it ships.
+            Heavy cotton, real denim, nothing shiny. Cash on delivery, and our AI
+            assistant confirms every order on WhatsApp before it ships.
           </p>
           <p className="mt-6">
             <a href="/shop" className="btn btn-solid">

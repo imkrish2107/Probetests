@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type OrderItem } from "@/lib/api";
 
 type Status = {
@@ -8,6 +8,7 @@ type Status = {
   status: string;
   total: string;
   items: OrderItem[];
+  whatsapp: string;
 };
 
 const NEXT: Record<string, string> = {
@@ -41,8 +42,12 @@ export default function OrderPage({
     }
   }
 
-  async function act(action: string) {
-    setBusy(true);
+  useEffect(() => {
+    if (searchParams.phone) load(searchParams.phone);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function act(action: string) {    setBusy(true);
     setErr("");
     try {
       const r = await api.orderAction(Number(params.id), { phone, action });
@@ -66,7 +71,7 @@ export default function OrderPage({
           </p>
           <a
             className="btn btn-solid mt-3"
-            href={`https://wa.me/?text=${encodeURIComponent(`ORDER ${params.id}`)}`}
+            href={o?.whatsapp || `https://wa.me/?text=${encodeURIComponent(`ORDER ${params.id}`)}`}
           >
             Confirm on WhatsApp
           </a>
