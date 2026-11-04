@@ -86,3 +86,7 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(businesses)")]
         if "greeting" not in cols:  # existing DBs predate the greeting field
             conn.execute("ALTER TABLE businesses ADD COLUMN greeting TEXT DEFAULT ''")
+        for c in ("delivery_name", "delivery_address", "delivery_phone",
+                  "delivery_pref", "delivery_date", "country"):
+            if c not in cols:  # purchases need a deliver-to block and a pick rule
+                conn.execute(f"ALTER TABLE businesses ADD COLUMN {c} TEXT DEFAULT ''")

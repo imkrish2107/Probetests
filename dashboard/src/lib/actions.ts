@@ -246,6 +246,12 @@ export async function saveSetup(form: FormData) {
     owner_whatsapp: form.get("owner_whatsapp"),
     wa_phone_number_id: form.get("wa_phone_number_id"),
     wa_display_number: form.get("wa_display_number"),
+    delivery_name: form.get("delivery_name"),
+    delivery_address: form.get("delivery_address"),
+    delivery_phone: form.get("delivery_phone"),
+    delivery_pref: form.get("delivery_pref"),
+    delivery_date: form.get("delivery_date"),
+    country: form.get("country"),
   };
   try {
     await api("/api/business", { method: "PUT", body: JSON.stringify(body) }, token);
@@ -346,4 +352,64 @@ export async function updateContact(form: FormData) {
     return { error: friendly(e) };
   }
   redirect(`/contacts/${id}?saved=1`);
+}
+
+// ---- Purchases (Picker suggestion shown on the order page; user can change) ----
+
+export async function createPurchase(form: FormData) {
+  const token = await sessionToken();
+  try {
+    const r = await api("/api/purchases", {
+      method: "POST",
+      body: JSON.stringify({
+        listing_id: Number(form.get("listing_id")),
+        price: form.get("price") === "" ? null : Number(form.get("price")),
+        seller_id: Number(form.get("seller_id") || 0) || null,
+        delivery_option: String(form.get("delivery_option") || ""),
+        payment: String(form.get("payment") || "cod"),
+      }),
+    }, token);
+    redirect(`/orders/${r.purchase_id}`);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+}
+
+export async function cancelPurchase(form: FormData) {
+  const token = await sessionToken();
+  try {
+    await api(`/api/purchases/${form.get("id")}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "cancelled" }),
+    }, token);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+  redirect(`/orders/${form.get("id")}`);
+}
+
+export async function markDelivered(form: FormData) {
+  const token = await sessionToken();
+  try {
+    await api(`/api/purchases/${form.get("id")}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "delivered" }),
+    }, token);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+  redirect(`/orders/${form.get("id")}`);
+}
+
+export async function askForUpdate(form: FormData) {
+  const token = await sessionToken();
+  try {
+    await api(`/api/purchases/${form.get("id")}/ask-update`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }, token);
+  } catch (e) {
+    return { error: friendly(e) };
+  }
+  redirect(`/orders/${form.get("id")}?asked=1`);
 }

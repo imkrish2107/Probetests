@@ -146,6 +146,8 @@ function Shopping({ hunt, listings, previewId }: { hunt: any; listings: any[]; p
                 <td>
                   <a href={`/hunts/${hunt.id}?preview=${l.id}`}>Ask seller</a>
                   <br />
+                  <a href={`/hunts/${hunt.id}/order/${l.id}`}>Place order</a>
+                  <br />
                   <a href={`/hunts/${hunt.id}/invite/${l.id}`}>Invite from my WhatsApp</a>
                 </td>
               </tr>

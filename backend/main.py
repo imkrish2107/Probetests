@@ -16,6 +16,7 @@ import house
 import hunt
 import vendor_search
 import httpx
+import purchases
 import re
 import sellers
 from argon2.exceptions import HashingError
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
     db.init_db()
     hunt.init_db()
     sellers.init_db()
+    purchases.init_db()
     hunt.fail_stale()
 
     async def loop():
@@ -40,6 +42,7 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(300)
             try:
                 automation.scheduler_tick()
+                purchases.tracker_tick()
             except Exception as e:
                 log.warning("scheduler tick failed: %s", e)
 
@@ -304,6 +307,8 @@ house.routes(app, require_api_key=require_api_key,
              need_login=need_login, api_error=api_error)
 vendor_search.routes(app, require_api_key=require_api_key,
                      need_login=need_login, api_error=api_error)
+purchases.routes(app, require_api_key=require_api_key,
+                 need_login=need_login, api_error=api_error)
 
 
 @app.post("/api/auth/signup", status_code=201)
@@ -409,7 +414,9 @@ async def me(request: Request, authorization: str | None = Header(default=None))
 
 BUSINESS_FIELDS = ["name", "wa_phone_number_id", "wa_display_number", "timezone",
                    "hours", "slot_minutes", "seats_per_slot", "menu", "prices",
-                   "faqs", "languages", "greeting", "owner_whatsapp", "crm_webhook_url"]
+                   "faqs", "languages", "greeting", "owner_whatsapp", "crm_webhook_url",
+                   "delivery_name", "delivery_address", "delivery_phone",
+                   "delivery_pref", "delivery_date", "country"]
 JSON_FIELDS = {"hours", "menu", "faqs", "languages"}
 
 DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]

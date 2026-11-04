@@ -58,6 +58,34 @@ export default async function SetupPage({
             <input className="input" name="owner_whatsapp" defaultValue={biz.owner_whatsapp ?? ""} />
           </label>
           <label>
+            Delivery name
+            <input className="input" name="delivery_name" defaultValue={biz.delivery_name ?? ""} />
+          </label>
+          <label>
+            Delivery address
+            <input className="input" name="delivery_address" defaultValue={biz.delivery_address ?? ""} />
+          </label>
+          <label>
+            Delivery phone
+            <input className="input" name="delivery_phone" defaultValue={biz.delivery_phone ?? ""} />
+          </label>
+          <label>
+            Delivery preference
+            <select className="input" name="delivery_pref" defaultValue={biz.delivery_pref ?? "cheapest"}>
+              <option value="cheapest">cheapest</option>
+              <option value="fastest">fastest</option>
+              <option value="by_date">arrive by a date</option>
+            </select>
+          </label>
+          <label>
+            Arrive-by date
+            <input className="input" type="date" name="delivery_date" defaultValue={biz.delivery_date ?? ""} />
+          </label>
+          <label>
+            Country
+            <input className="input" name="country" defaultValue={biz.country ?? ""} />
+          </label>
+          <label>
             WhatsApp number ID
             <input
               className="input"

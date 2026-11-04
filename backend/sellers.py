@@ -294,6 +294,10 @@ def _apply_button(bid: int, s, body: str) -> None:
                          ("yes" if norm == "in stock" else "no",
                           last["listing_id"]))
             conn.commit()
+    if last["template"] == "order_request" and norm in ("confirm order", "decline"):
+        import purchases
+        purchases.record_seller_decision(
+            bid, s["id"], "seller_confirmed" if norm == "confirm order" else "seller_declined")
     _log(bid, s["id"], last["hunt_id"], last["listing_id"], "in",
          "", f"[button] {body}")
 
@@ -334,6 +338,11 @@ def _parse_and_save(bid: int, seller_id: int, body: str) -> None:
              str(parsed.get("in_stock") or "unknown")[:10],
              f"vendor said: {body[:500]}"))
         conn.commit()
+        try:  # order tracking / confirm / decline from the same text
+            import purchases
+            purchases.apply_seller_text(bid, seller_id, body)
+        except Exception:
+            pass
 
 
 def routes(app, *, require_api_key, need_login, api_error) -> None:
