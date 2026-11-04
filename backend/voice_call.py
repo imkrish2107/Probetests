@@ -243,6 +243,10 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
         from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
     except ImportError:  # pre-1.15: fall back to Silero turn-taking below
         ExternalUserTurnStrategies = None
+    try:
+        from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
+    except ImportError:  # pre-1.14: tools stay unwired, talk still works
+        FunctionSchema = None
     from pipecat.services.openai.llm import OpenAILLMService
     from pipecat.transports.base_transport import TransportParams
     from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
@@ -289,6 +293,32 @@ async def _run_voice_call(business: dict, connection, wa_call) -> None:
                 system_instruction=agent.build_prompt(biz)))
         tts = MMSTTSService(lang=first)
         context = LLMContext()
+        tool_ctx = {"business_id": business["id"], "contact_id": cid, "call_id": call_id}
+
+        async def _run_tool(params) -> None:
+            try:
+                result = agent.run_tool(params.function_name, dict(params.arguments or {}),
+                                        tool_ctx)
+            except Exception as e:
+                log.warning("call %s tool %s failed: %s", call_id, params.function_name, e)
+                result = {"error": "tool_failed"}
+            log.info("call %s tool %s -> %.120s", call_id, params.function_name, result)
+            await params.result_callback(result)
+
+        if FunctionSchema is not None:
+            # Handlers ride on the schemas: advertised tools auto-register.
+            context.set_tools([
+                FunctionSchema(
+                    name=t["function"]["name"],
+                    description=t["function"]["description"],
+                    properties=t["function"]["parameters"].get("properties", {}),
+                    required=t["function"]["parameters"].get("required", []),
+                    handler=_run_tool,
+                )
+                for t in agent.TOOLS
+            ])
+        else:
+            log.warning("call %s: no FunctionSchema, tools disabled", call_id)
         if ExternalUserTurnStrategies is not None:
             # Meta's endpointing ends the turn (its stop strategy waits for
             # the final transcript); Silero VAD stays on as the backstop.
