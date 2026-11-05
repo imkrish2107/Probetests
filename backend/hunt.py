@@ -182,7 +182,7 @@ def responses_request(payload: dict, timeout: int = 90) -> tuple[dict, dict]:
 
 def chat_structured(prompt: str, schema: dict, image_b64: str | None = None,
                     max_tokens: int = 600, pdf_b64: str | None = None,
-                    filename: str = "plan.pdf") -> tuple[dict, dict]:
+                    filename: str = "plan.pdf", timeout: int = 60) -> tuple[dict, dict]:
     """Chat completions + json_schema response_format. No tools: page/model
     text is untrusted data, so the call can only return fields."""
     import httpx
@@ -192,18 +192,21 @@ def chat_structured(prompt: str, schema: dict, image_b64: str | None = None,
         content.append({"type": "image_url",
                         "image_url": {"url": "data:image/jpeg;base64," + image_b64}})
     if pdf_b64:
-        content.append({"type": "file", "filename": filename,
-                        "file_data": "data:application/pdf;base64," + pdf_b64})
+        content.append({"type": "file", "file": {
+            "filename": filename,
+            "file_data": "data:application/pdf;base64," + pdf_b64}})
     r = httpx.post(
         f"{API}/chat/completions", headers={"Authorization": f"Bearer {_key()}"},
         json={"model": MODEL, "messages": [{"role": "user", "content": content}],
               "max_tokens": max_tokens, "reasoning_effort": "minimal",
               "response_format": {"type": "json_schema",
                                   "json_schema": {"name": "r", "schema": schema}}},
-        timeout=60)
+        timeout=timeout)
     r.raise_for_status()
     data = r.json()
     text = data["choices"][0]["message"]["content"]
+    if not text:  # reasoning can use the whole token budget and leave no answer
+        raise RuntimeError(f"model gave no answer ({data['choices'][0].get('finish_reason')})")
     u = data.get("usage", {}) or {}
     tin, tout = u.get("prompt_tokens", 0) or 0, u.get("completion_tokens", 0) or 0
     cost = tin / 1000 * models.PRICE_IN_PER_1K + tout / 1000 * models.PRICE_OUT_PER_1K
@@ -277,6 +280,21 @@ PLAN_SCHEMA = {
 }
 
 
+_FEET = r"(\d+(?:\.\d+)?)\s*['′’]\s*-?\s*(?:(\d+(?:\.\d+)?)\s*(?:[\"″”]|'')?)?"
+_FEET_BY_FEET = re.compile(_FEET + r"\s*(?:x|×|by)\s*" + _FEET, re.I)
+
+
+def parse_dims(text) -> tuple[float, float] | None:
+    """Feet-and-inches as printed on a drawing, e.g. 13'-6" X 10'-2", to decimal
+    feet. Done in code so the model never does the arithmetic."""
+    m = _FEET_BY_FEET.search(str(text or ""))
+    if not m:
+        return None
+    a, ai, b, bi = m.groups()
+    return (round(float(a) + float(ai or 0) / 12, 2),
+            round(float(b) + float(bi or 0) / 12, 2))
+
+
 def read_plan(raw: bytes) -> tuple[dict, dict]:
     """Plan Reader: reports only what the drawing prints. No arithmetic,
     no guessing: missing dimensions stay empty."""
@@ -284,13 +302,16 @@ def read_plan(raw: bytes) -> tuple[dict, dict]:
     prompt = (
         "Read this floor plan. For each room report name, length, width, unit"
         " (ft or m) and the exact dimension text printed on the drawing, plus"
-        " confidence (high/low). Copy numbers only as printed; never convert,"
-        " compute or fill in missing ones: use null. Also count doors,"
+        " confidence (high/low). Always copy the printed dimension text into"
+        " seen_text, for example 13'-6\" X 10'-2\". Give length and width only"
+        " when printed as plain numbers such as 12 x 10; for feet-and-inches"
+        " use null, because the software converts them from seen_text. Never"
+        " convert, compute or fill in missing numbers. Also count doors,"
         " windows and bathrooms if shown. readable false if this is not a"
         " readable plan, has_dimensions false if no dimensions are printed.")
     if raw[:4] == b"%PDF":
-        return chat_structured(prompt, PLAN_SCHEMA, None, max_tokens=1200,
-                               pdf_b64=base64.b64encode(raw).decode())
+        return chat_structured(prompt, PLAN_SCHEMA, None, max_tokens=4000,
+                               pdf_b64=base64.b64encode(raw).decode(), timeout=120)
     from PIL import Image
     import io
     img = Image.open(io.BytesIO(raw)).convert("RGB")
@@ -299,7 +320,7 @@ def read_plan(raw: bytes) -> tuple[dict, dict]:
     img.save(buf, "JPEG", quality=85)
     return chat_structured(prompt, PLAN_SCHEMA,
                            base64.b64encode(buf.getvalue()).decode(),
-                           max_tokens=1200)
+                           max_tokens=4000, timeout=120)
 
 
 def _run_plan(hunt_id: int) -> None:
@@ -320,13 +341,15 @@ def _run_plan(hunt_id: int) -> None:
         with db.connect() as conn:
             conn.execute("DELETE FROM hunt_items WHERE hunt_id = ?", (hunt_id,))
             for r in plan.get("rooms") or []:
+                spec = {k: r.get(k) for k in ("length", "width", "unit",
+                                              "seen_text", "confidence")}
+                feet = parse_dims(r.get("seen_text"))
+                if feet:
+                    spec.update(length=feet[0], width=feet[1], unit="ft")
                 conn.execute(
                     "INSERT INTO hunt_items (hunt_id, name, spec, quantity,"
                     " unit, status) VALUES (?, ?, ?, 0, '', 'room')",
-                    (hunt_id, str(r.get("name") or "Room")[:80],
-                     json.dumps({k: r.get(k) for k in
-                                 ("length", "width", "unit", "seen_text",
-                                  "confidence")})))
+                    (hunt_id, str(r.get("name") or "Room")[:80], json.dumps(spec)))
             # Keep the user's intake (city, floors, height, finish, built-up):
             # BOQ, house image and vendor search all read it from here.
             try:
@@ -898,9 +921,16 @@ def _run_hunt(hunt_id: int) -> None:
         step(hunt_id, "Finder", "done", f"{len(cands)} candidates")
 
         step(hunt_id, "Checker", "running")
-        checked = [check_listing(c["url"], PROFILES["shopping"]) for c in cands]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            checked = list(pool.map(
+                lambda c: check_listing(c["url"], PROFILES["shopping"]), cands))
+        for c, found in zip(checked, cands):  # blocked pages still get a name and a link
+            c["title"] = c.get("title") or found.get("title") or ""
+            c["seller"] = c.get("seller") or (urlparse(c["url"]).hostname or "").removeprefix("www.")
         step(hunt_id, "Checker", "done",
-             f"{sum(1 for c in checked if c.get('price') is not None)} priced")
+             f"{sum(1 for c in checked if c.get('price') is not None)} verified prices,"
+             f" {sum(1 for c in checked if str(c.get('note', '')).startswith('Couldn'))} blocked")
 
         step(hunt_id, "Matcher", "running")
         scored = 0
@@ -908,11 +938,16 @@ def _run_hunt(hunt_id: int) -> None:
             if c.get("image"):
                 sim, reason, mu = match_one(image_b64, c["image"])
                 add_usage(hunt_id, mu["in"], mu["out"])
+                if str(reason).startswith("image not fetchable"):
+                    continue  # no comparison happened: unknown, not a bad match
                 c["similarity"], c["match_reason"] = sim, reason
                 if sim >= 60:
                     scored += 1
-        step(hunt_id, "Matcher", "done", f"{scored} matched ≥60")
-        kept = [c for c in checked if (c.get("similarity") or 0) >= 60]
+        step(hunt_id, "Matcher", "done", f"{scored} close matches")
+        # Only a real low score removes a listing. A shop that blocks automated
+        # checks stays visible as unverified, so the user can still open it.
+        kept = [c for c in checked
+                if c.get("similarity") is None or c["similarity"] >= 60]
 
         for c in kept:
             verified = 1 if c.get("verify") else 0
@@ -930,16 +965,20 @@ def _run_hunt(hunt_id: int) -> None:
                      c.get("currency", ""), "", "",
                      c.get("in_stock", "unknown"),
                      c.get("delivery", "")[:200], c.get("image", ""),
-                     c.get("whatsapp", ""), c.get("similarity", 0),
+                     c.get("whatsapp", ""), c.get("similarity"),
                      c.get("match_reason", "")[:500], verified,
                      (c.get("verify") or c.get("note", ""))[:200]))
                 conn.commit()
         ordered = rank_listings([{**c, "verified": 1 if c.get("verify") else 0}
                                  for c in kept])
         n = len(ordered)
-        reason = ("Best verified price of the %d listings checked" % n) if n else ""
-        if ordered and ordered[0].get("price") is not None:
-            reason += f": {ordered[0].get('title', '')[:80]}"
+        priced = sum(1 for c in ordered if c.get("price") is not None and c.get("verified"))
+        if priced:
+            reason = f"Best verified price of the {n} listings checked"
+        elif n:
+            reason = f"Found {n} listings, but the shops blocked price checks. Open them to compare."
+        else:
+            reason = "No close matches found. Try a clearer photo."
         with db.connect() as conn:
             conn.execute("UPDATE hunts SET status = 'done', top_reason = ?"
                          " WHERE id = ?", (reason, hunt_id))
@@ -1026,23 +1065,54 @@ def routes(app, *, require_api_key, need_login, api_error) -> None:
             conn.commit()
         try:
             rel, kind = save_intake(u["business_id"], hid, data)
+            with db.connect() as conn:
+                conn.execute("UPDATE hunts SET photo_path = ? WHERE id = ?", (rel, hid))
+                conn.commit()
+            step(hid, "Plan Reader" if flow == "construction" else "Spotter", "queued")
         except ValueError as e:
             with db.connect() as conn:
                 conn.execute("DELETE FROM hunts WHERE id = ?", (hid,))
                 conn.commit()
             return api_error("invalid", str(e), 422)
-        with db.connect() as conn:
-            conn.execute("UPDATE hunts SET photo_path = ? WHERE id = ?", (rel, hid))
-            conn.commit()
-        gc_photos()
-        if flow == "construction":
-            step(hid, "Plan Reader", "queued")
-            background_tasks.add_task(_run_plan, hid)
-        else:
-            step(hid, "Spotter", "queued")
-            background_tasks.add_task(_run_hunt, hid)  # starlette threads sync tasks
+        except Exception:  # a row left 'running' would block every later hunt
+            log.exception("hunt %s could not start", hid)
+            with db.connect() as conn:
+                conn.execute("DELETE FROM hunt_steps WHERE hunt_id = ?", (hid,))
+                conn.execute("DELETE FROM hunts WHERE id = ?", (hid,))
+                conn.commit()
+            return api_error("failed", "the server could not start this hunt", 500)
+        try:
+            gc_photos()  # housekeeping must never fail a hunt that has started
+        except OSError as e:
+            log.warning("photo cleanup failed: %s", e)
+        # starlette runs sync background tasks in a thread
+        background_tasks.add_task(_run_plan if flow == "construction" else _run_hunt, hid)
         return JSONResponse({"id": hid, "status": "running", "flow": flow},
                             status_code=201)
+
+    @app.post("/api/hunts/{hunt_id}/read-plan")
+    async def read_plan_again(hunt_id: int, request: Request, background_tasks: BackgroundTasks):
+        if denied := require_api_key(request):
+            return denied
+        u, err = need_login(request)
+        if err:
+            return err
+        with db.connect() as conn:
+            h = conn.execute("SELECT flow, status, photo_path FROM hunts"
+                             " WHERE id = ? AND business_id = ?",
+                             (hunt_id, u["business_id"])).fetchone()
+            if not h or h["flow"] != "construction":
+                return api_error("not_found", "no plan", 404)
+            if h["status"] not in ("failed", "awaiting_rooms") or not h["photo_path"]:
+                return api_error("invalid", "this plan cannot be read again now", 422)
+            if conn.execute("SELECT id FROM hunts WHERE business_id = ? AND status = 'running'",
+                            (u["business_id"],)).fetchone():
+                return api_error("busy", "one hunt at a time", 409)
+            conn.execute("UPDATE hunts SET status = 'running', error = '' WHERE id = ?", (hunt_id,))
+            conn.commit()
+        step(hunt_id, "Plan Reader", "queued")
+        background_tasks.add_task(_run_plan, hunt_id)
+        return {"id": hunt_id, "status": "running"}
 
     @app.get("/api/hunts")
     async def list_hunts(request: Request):
@@ -1171,6 +1241,11 @@ SAMPLE_NONE = """<html><head><title>Lookbook 2024</title></head>
 def selfcheck() -> None:
     """Offline: extraction, blocks, invented-URL filter, ranking, isolation."""
     import tempfile
+    # Never write to the live data folder, which belongs to the service user.
+    global DATA
+    DATA = Path(tempfile.mkdtemp()) / "hunts"
+    assert parse_dims("13'-6\" X 10'-2\"") == (13.5, 10.17)
+    assert parse_dims("4.2 x 3.6 m") is None
     # JSON-LD + quote
     e = extract_listing(SAMPLE_JSONLD.encode())
     assert e["price"] == 1299 and e["currency"] == "INR", e

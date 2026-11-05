@@ -11,6 +11,7 @@ import {
   genImage,
   linkSeller,
   quoteRequest,
+  readPlanAgain,
   startVendorSearch,
   stockCheck,
 } from "@/lib/actions";
@@ -66,6 +67,12 @@ export default async function HuntPage({
       {error && <p className="notice">{error}</p>}
       {sent && <p className="notice good">{sent}</p>}
       {hunt.error && !(construction && hunt.status === "failed") && <p className="notice">{plainError(hunt.error)}</p>}
+      {hunt.error && (
+        <details className="small" style={{ marginBottom: 18 }}>
+          <summary>Technical detail</summary>
+          <p className="muted">{hunt.error}</p>
+        </details>
+      )}
       {!construction && (
         <Shopping hunt={hunt} steps={steps} listings={listings} previewId={preview} />
       )}
@@ -385,9 +392,20 @@ function Construction({
           <div>
             <h2 className="section-title">Check the rooms</h2>
             {reading && <p className="notice">The Plan Reader is working. This page updates by itself.</p>}
-            {hunt.status === "failed" && roomRows.length === 0 && (
+            {needRooms && roomRows.length === 0 && (
               <>
-                <p className="notice">The Plan Reader couldn’t read this plan. Enter the rooms yourself to carry on.</p>
+                <p className="notice">
+                  {hunt.error === "server restarted"
+                    ? "The server restarted before the Plan Reader could finish."
+                    : hunt.status === "failed"
+                      ? "The Plan Reader couldn’t finish this plan."
+                      : "The Plan Reader found no rooms on this plan."}{" "}
+                  Read it again, or enter the rooms yourself.
+                </p>
+                <form action={async (fd) => { "use server"; await readPlanAgain(fd); }} style={{ marginBottom: 18 }}>
+                  <input type="hidden" name="id" value={hunt.id} />
+                  <Submit pending="Starting…">Read the plan again</Submit>
+                </form>
                 <RoomForm huntId={hunt.id} rows={[]} blank={8} action="Save rooms" />
               </>
             )}

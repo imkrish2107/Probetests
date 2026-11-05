@@ -64,6 +64,16 @@ export async function confirmRooms(form: FormData) {
   redirect(`/hunts/${form.get("id")}`);
 }
 
+export async function readPlanAgain(form: FormData) {
+  const token = await sessionToken();
+  try {
+    await api(`/api/hunts/${form.get("id")}/read-plan`, { method: "POST", body: "{}" }, token);
+  } catch (e) {
+    redirect(`/hunts/${form.get("id")}?error=${encodeURIComponent(friendly(e))}`);
+  }
+  redirect(`/hunts/${form.get("id")}`);
+}
+
 export async function buildBoq(form: FormData) {
   const token = await sessionToken();
   try {

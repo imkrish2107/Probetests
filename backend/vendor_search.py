@@ -272,6 +272,7 @@ def selfcheck() -> None:
         db.init_db()
         import hunt
         import sellers
+        hunt.DATA = Path(tmp) / "hunts"  # never the live data folder
         hunt.init_db()
         sellers.init_db()
         with db.connect() as conn:

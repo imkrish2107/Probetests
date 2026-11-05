@@ -13,6 +13,7 @@ EnvironmentFile=/home/wa/Probetests/backend/.env
 ExecStart=/home/wa/Probetests/backend/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
 Restart=always
 RestartSec=3
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target

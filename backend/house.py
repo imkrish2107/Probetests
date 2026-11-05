@@ -296,6 +296,7 @@ def selfcheck() -> None:
         db.init_db()
         import boq
         import hunt
+        hunt.DATA = Path(tmp) / "hunts"  # never the live data folder
         hunt.init_db()
         with db.connect() as conn:
             conn.execute("INSERT INTO businesses (slug, name) VALUES ('a','A')")
