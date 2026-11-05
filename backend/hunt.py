@@ -833,6 +833,9 @@ def check_listing(url: str, profile: dict | None = None) -> dict:
         body, final = polite_get(url)
     except FetchError as e:
         return {"url": url, "note": f"Couldn't check: {e}"}
+    except Exception as e:  # timeouts and dropped connections: one slow shop must not sink the hunt
+        log.info("fetch failed for %s: %s", url, e)
+        return {"url": url, "note": f"Couldn't check: {type(e).__name__}"}
     try:
         info = extract_listing(body)
     except Exception as e:
@@ -1031,7 +1034,7 @@ def _run_hunt(hunt_id: int) -> None:
         for c, found in zip(checked, cands):  # blocked pages still get a name and a link
             apply_facts(c, found)
         step(hunt_id, "Checker", "done",
-             f"{sum(1 for c in checked if c.get('price') is not None)} verified prices,"
+             f"{sum(1 for c in checked if c.get('price') is not None and not c.get('from_search'))} verified prices,"
              f" {sum(1 for c in checked if str(c.get('note', '')).startswith('Couldn'))} blocked")
 
         step(hunt_id, "Matcher", "running")
