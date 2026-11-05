@@ -874,7 +874,7 @@ def match_one(crop_b64: str, image_url: str) -> tuple[int, str, dict]:
     r = httpx.post(
         f"{API}/chat/completions", headers={"Authorization": f"Bearer {_key()}"},
         json={"model": MODEL, "messages": [{"role": "user", "content": content}],
-              "max_tokens": 200, "reasoning_effort": "minimal",
+              "max_tokens": 1500, "reasoning_effort": "minimal",
               "response_format": {"type": "json_schema",
                                   "json_schema": {"name": "m", "schema": MATCH_SCHEMA}}},
         timeout=60)
@@ -1038,7 +1038,11 @@ def _run_hunt(hunt_id: int) -> None:
         scored = 0
         for c in checked:
             if c.get("image"):
-                sim, reason, mu = match_one(image_b64, c["image"])
+                try:
+                    sim, reason, mu = match_one(image_b64, c["image"])
+                except Exception as e:  # one failed comparison must not sink the hunt
+                    log.warning("match failed for hunt %s: %s", hunt_id, e)
+                    continue
                 add_usage(hunt_id, mu["in"], mu["out"])
                 if str(reason).startswith("image not fetchable"):
                     continue  # no comparison happened: unknown, not a bad match
