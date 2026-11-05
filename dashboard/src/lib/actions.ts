@@ -193,6 +193,19 @@ export async function stockCheck(form: FormData) {
   redirect(`/hunts/${hid}?sent=${encodeURIComponent(note)}`);
 }
 
+export async function agentCall(form: FormData) {
+  const token = await sessionToken();
+  const hid = String(form.get("hunt_id"));
+  let note = "";
+  try {
+    const r = await api(`/api/listings/${form.get("listing_id")}/agent-call`, { method: "POST", body: "{}" }, token);
+    note = String(r.note ?? "");
+  } catch (e) {
+    redirect(`/hunts/${hid}?error=${encodeURIComponent(friendly(e))}#quotes`);
+  }
+  redirect(`/hunts/${hid}?sent=${encodeURIComponent(note)}#quotes`);
+}
+
 export async function quoteRequest(form: FormData) {
   const token = await sessionToken();
   const listing = String(form.get("listing_id"));

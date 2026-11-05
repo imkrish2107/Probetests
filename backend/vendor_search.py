@@ -190,8 +190,12 @@ def _store(bid: int, hid: int, item: dict, rows: list[dict],
 
 
 def vendors_of(bid: int, hid: int) -> dict:
-    """Listings grouped by BOQ item with live best/cheapest flags."""
+    """Listings grouped by BOQ item with live best/cheapest flags. A price the
+    vendor gave by call or WhatsApp replaces what search found."""
     import hunt
+    import quote_call
+    quote_call.init_db()
+    calling = False
     with db.connect() as conn:
         h = conn.execute("SELECT id FROM hunts WHERE id = ? AND business_id = ?",
                          (hid, bid)).fetchone()
@@ -205,11 +209,29 @@ def vendors_of(bid: int, hid: int) -> dict:
             rows = [dict(r) for r in conn.execute(
                 """SELECT l.id, l.url, l.title, l.seller, l.price, l.currency,
                           l.unit, l.city, l.in_stock, l.delivery, l.verified,
-                          l.verify_note, l.seller_id, l.whatsapp,
-                          s.opted_in AS seller_opted_in
+                          l.verify_note, l.seller_id,
+                          CASE WHEN s.opted_in = 1 THEN s.phone ELSE l.whatsapp END AS whatsapp,
+                          s.opted_in AS seller_opted_in,
+                          (SELECT q.state FROM quote_calls q WHERE q.listing_id = l.id
+                           ORDER BY q.id DESC LIMIT 1) AS call_state,
+                          (SELECT q.outcome FROM quote_calls q WHERE q.listing_id = l.id
+                           ORDER BY q.id DESC LIMIT 1) AS call_outcome
                    FROM listings l LEFT JOIN sellers s ON s.id = l.seller_id
                    WHERE l.hunt_id = ? AND l.hunt_item_id = ? ORDER BY l.id""",
                 (hid, it["id"]))]
+            quotes = {q["seller_id"]: q for q in conn.execute(
+                "SELECT * FROM quotes WHERE business_id = ? AND hunt_item_id = ?"
+                " AND unit_price IS NOT NULL ORDER BY id", (bid, it["id"]))}
+            for row in rows:
+                calling = calling or row["call_state"] == "ringing"
+                q = quotes.get(row["seller_id"])
+                if q:
+                    row.update(price=q["unit_price"], currency="INR",
+                               unit=q["unit"] or row["unit"], verified=1,
+                               in_stock=q["in_stock"] or row["in_stock"],
+                               delivery=q["delivery_days"] or row["delivery"],
+                               quoted_by=q["source"],
+                               verify_note=f"Quoted by the vendor ({q['source']})")
             r = hunt.rank({"quantity": it["quantity"], "unit": it["unit"],
                            "city": ""}, rows)
             best_id = (r.get("best") or {}).get("id")
@@ -225,7 +247,7 @@ def vendors_of(bid: int, hid: int) -> dict:
                                          if row["price"] is not None),
                            "blocked": blocked,
                            "best_reason": r["reasons"].get("best", "")})
-    return {"items": groups}
+    return {"items": groups, "calling": calling}
 
 
 def run_vendor_search(bid: int, hid: int,

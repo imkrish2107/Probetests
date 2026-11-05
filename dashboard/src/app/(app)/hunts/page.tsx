@@ -25,7 +25,7 @@ const CONSTRUCTION: Agent[] = [
   { name: "Checker", job: "Checks each vendor's page for a price" },
   { name: "Ranker", job: "Marks the best and cheapest vendor" },
   { name: "Messenger", job: "Asks vendors for quotes on WhatsApp" },
-  { name: "Quote Caller", job: "Calls vendors who agreed", off: true },
+  { name: "Quote Caller", job: "Calls vendors who agreed, when you click" },
 ];
 
 // Hunts: start a hunt from a photo or a floor plan, see the agents for that

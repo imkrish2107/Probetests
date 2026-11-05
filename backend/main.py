@@ -11,6 +11,7 @@ import auth
 import automation
 import boq
 import call_bot
+import quote_call
 import db
 import house
 import hunt
@@ -35,6 +36,7 @@ async def lifespan(app: FastAPI):
     hunt.init_db()
     sellers.init_db()
     purchases.init_db()
+    quote_call.init_db()
     hunt.fail_stale()
 
     async def loop():
@@ -318,6 +320,8 @@ vendor_search.routes(app, require_api_key=require_api_key,
                      need_login=need_login, api_error=api_error)
 purchases.routes(app, require_api_key=require_api_key,
                  need_login=need_login, api_error=api_error)
+quote_call.routes(app, require_api_key=require_api_key,
+                  need_login=need_login, api_error=api_error)
 
 
 @app.post("/api/auth/signup", status_code=201)

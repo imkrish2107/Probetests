@@ -3,6 +3,7 @@ import { api, sessionToken } from "@/lib/api";
 import Submit from "@/lib/submit";
 import Refresh from "./refresh";
 import {
+  agentCall,
   approveHunt,
   buildBoq,
   confirmRooms,
@@ -46,7 +47,7 @@ export default async function HuntPage({
   const hasActivity = construction && (vendors?.items ?? []).some((g: any) => g.listings.length > 0);
   return (
     <main>
-      <Refresh active={running} />
+      <Refresh active={running || Boolean(vendors?.calling)} />
       <PageHead
         crumb={{ href: "/hunts", text: "All hunts" }}
         title={`${construction ? "House plan" : "Product hunt"} #${hunt.id}`}
@@ -677,10 +678,10 @@ function Construction({
                               <>
                                 <span className="price">{money(l.price, l.currency)}</span>
                                 {l.unit && <span className="muted small"> / {l.unit}</span>}
-                                {!l.verified && (
+                                {(!l.verified || l.quoted_by) && (
                                   <>
                                     <br />
-                                    <span className="muted small">web search</span>
+                                    <span className="muted small">{l.quoted_by ? `quoted by ${l.quoted_by}` : "web search"}</span>
                                   </>
                                 )}
                               </>
@@ -695,9 +696,18 @@ function Construction({
                           </td>
                           <td>
                             <div className="actions">
+                              {l.whatsapp && Boolean(l.seller_opted_in) && (
+                                <form action={async (fd) => { "use server"; await agentCall(fd); }}>
+                                  <input type="hidden" name="hunt_id" value={hunt.id} />
+                                  <input type="hidden" name="listing_id" value={l.id} />
+                                  <Submit pending="Starting…" className="btn small" disabled={vendors.calling}>
+                                    Agent call
+                                  </Submit>
+                                </form>
+                              )}
                               {l.whatsapp ? (
                                 <>
-                                  <a className="btn small" href={`tel:+${phoneDigits(l.whatsapp)}`}>
+                                  <a className={l.seller_opted_in ? "btn ghost small" : "btn small"} href={`tel:+${phoneDigits(l.whatsapp)}`}>
                                     Call
                                   </a>
                                   <a className="btn ghost small" href={`/hunts/${hunt.id}?quote=${l.id}#quotes`}>
@@ -705,11 +715,17 @@ function Construction({
                                   </a>
                                 </>
                               ) : (
-                                <a className="btn ghost small" href={l.url} target="_blank" rel="noreferrer">
-                                  Open listing
-                                </a>
+                                <>
+                                  <a className="btn ghost small" href={l.url} target="_blank" rel="noreferrer">
+                                    Open listing
+                                  </a>
+                                  <a className="small" href={`/hunts/${hunt.id}?quote=${l.id}#quotes`}>
+                                    Link a vendor
+                                  </a>
+                                </>
                               )}
                             </div>
+                            {l.call_state && <p className="muted small">{callWord(l)}</p>}
                           </td>
                         </tr>
                       ))}
@@ -726,6 +742,17 @@ function Construction({
       <Compare hunt={hunt} vendors={vendors} hasListings={hasListings} />
     </>
   );
+}
+
+function callWord(l: any) {
+  if (l.call_state === "ringing") return "The agent is calling…";
+  const words: Record<string, string> = {
+    quoted: "Agent call: quote saved",
+    no_quote: "Agent call: no quote given",
+    unanswered: "Agent call: no answer",
+    opted_out: "Agent call: asked not to be called",
+  };
+  return words[l.call_outcome] ?? "Agent call failed. See what the agents did.";
 }
 
 function phoneDigits(phone: unknown) {

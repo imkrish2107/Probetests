@@ -23,6 +23,9 @@ OUTBOUND_TABLE = """CREATE TABLE IF NOT EXISTS outbound_log (
   phone TEXT DEFAULT '', at TEXT DEFAULT (datetime('now')))"""
 
 
+ended: set = set()  # calls Meta reports as finished; a live quote call watches this
+
+
 def digits(phone: str) -> str:
     return re.sub(r"\D", "", phone or "")
 
@@ -144,6 +147,7 @@ def handle_outbound_item(item: dict, logger=None) -> None:
                     json.dump({"sdp_type": sess.get("sdp_type", "answer"),
                                "sdp": sess["sdp"]}, f)
         elif event == "terminate":
+            ended.add(item.get("id", ""))
             log("connected" if item.get("duration") else "unanswered",
                 item.get("id", ""), item.get("to", "") or "")
         elif logger:
