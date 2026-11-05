@@ -12,7 +12,7 @@ import db
 import house
 
 MAX_ITEMS = 10
-MAX_SEARCHES = 20
+MAX_SEARCHES = 30
 VENDORS_PER_ITEM = 8
 
 
@@ -48,7 +48,7 @@ def search_vendors(bid: int, hid: int, item_ids: list[int] | None = None) -> dic
     items = items[:MAX_ITEMS]
     remaining = MAX_SEARCHES - used
     if remaining <= 0:
-        raise ValueError("search limit reached for this hunt (20)")
+        raise ValueError(f"search limit reached for this hunt ({MAX_SEARCHES})")
     intake = _intake(hid)
     city = str(intake.get("city") or "").strip()
     summary = []
@@ -78,19 +78,26 @@ def search_vendors(bid: int, hid: int, item_ids: list[int] | None = None) -> dic
                   f"{it['name']}: {len(found)} candidates")
         hunt.step(hid, "Checker", "running", it["name"])
         priced, blocked = 0, 0
-        rows = []
-        for c in found:
-            if c["url"] in seen_urls:
-                continue
-            seen_urls.add(c["url"])
-            info = hunt.check_listing(c["url"], hunt.PROFILES["construction"])
+        rows, again = [], []
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            infos = list(pool.map(
+                lambda c: hunt.check_listing(c["url"], hunt.PROFILES["construction"]), found))
+        for c, info in zip(found, infos):
+            hunt.apply_facts(info, c)
             if (info.get("note") or "").startswith("Couldn't check"):
                 blocked += 1
             elif info.get("price") is not None:
                 priced += 1
+            if c["url"] in seen_urls:  # searched before: fill in what it lacked
+                info["url"] = c["url"]
+                again.append(info)
+                continue
+            seen_urls.add(c["url"])
             info["item_id"] = it["id"]
             rows.append(info)
         stored = _store(bid, hid, it, rows, city)
+        _refresh(bid, hid, it, again)
         hunt.step(hid, "Checker", "done",
                   f"{it['name']}: {priced} priced, {blocked} blocked")
         r = hunt.rank({"quantity": it["quantity"], "unit": it["unit"],
@@ -110,29 +117,57 @@ def search_vendors(bid: int, hid: int, item_ids: list[int] | None = None) -> dic
     return {"items": summary, "searches_left": max(0, MAX_SEARCHES - left)}
 
 
+def _seller_id(conn, bid: int, name: str, phone: str) -> int | None:
+    """Link (never message) a vendor whose phone was found."""
+    if not phone:
+        return None
+    s = conn.execute("SELECT id FROM sellers WHERE business_id = ? AND phone = ?",
+                     (bid, phone)).fetchone()
+    if s:
+        return s["id"]
+    return conn.execute("INSERT INTO sellers (business_id, name, phone, kind)"
+                        " VALUES (?, ?, ?, 'vendor')",
+                        (bid, (name or "")[:120], phone)).lastrowid
+
+
+def _refresh(bid: int, hid: int, item: dict, rows: list[dict]) -> None:
+    """A repeat search fills gaps in unverified rows; verified ones stay as they are."""
+    import sellers
+    with db.connect() as conn:
+        for c in rows:
+            phone = sellers.digits(c.get("whatsapp") or "")
+            conn.execute(
+                """UPDATE listings SET
+                     price = COALESCE(?, price),
+                     currency = CASE WHEN ? IS NULL THEN currency ELSE ? END,
+                     unit = CASE WHEN ? = '' THEN unit ELSE ? END,
+                     seller = ?, title = CASE WHEN ? = '' THEN title ELSE ? END,
+                     whatsapp = CASE WHEN ? = '' THEN whatsapp ELSE ? END,
+                     seller_id = COALESCE(?, seller_id),
+                     delivery = ?, verify_note = ?
+                   WHERE hunt_id = ? AND hunt_item_id = ? AND url = ? AND verified = 0""",
+                (c.get("price"), c.get("price"), c.get("currency", ""),
+                 c.get("unit", ""), c.get("unit", ""),
+                 (c.get("seller") or "")[:120],
+                 (c.get("title") or "")[:200], (c.get("title") or "")[:200],
+                 phone, phone, _seller_id(conn, bid, c.get("seller"), phone),
+                 (c.get("delivery") or "")[:200], (c.get("note") or "")[:200],
+                 hid, item["id"], c["url"]))
+        conn.commit()
+
+
 def _store(bid: int, hid: int, item: dict, rows: list[dict],
            city: str) -> list[dict]:
-    """Save listings; link (never message) vendors whose phone is on the page."""
+    """Save listings; link (never message) vendors whose phone was found."""
     import sellers
     out = []
     with db.connect() as conn:
         for c in rows:
-            sid = None
             phone = sellers.digits(c.get("whatsapp") or "")
-            if phone:
-                s = conn.execute("SELECT id, opted_in FROM sellers WHERE"
-                                 " business_id = ? AND phone = ?",
-                                 (bid, phone)).fetchone()
-                if s:
-                    sid = s["id"]
-                else:
-                    cur = conn.execute(
-                        "INSERT INTO sellers (business_id, name, phone, kind)"
-                        " VALUES (?, ?, ?, 'vendor')",
-                        (bid, (c.get("seller") or "")[:120], phone))
-                    sid = cur.lastrowid
-            verified = 1 if c.get("price") is not None and not (
+            sid = _seller_id(conn, bid, c.get("seller"), phone)
+            verified = 1 if c.get("price") is not None and not c.get("from_search") and not (
                 c.get("note") or "").startswith("Couldn't check") else 0
+            unit = c.get("unit") or item["unit"]
             cur = conn.execute(
                 """INSERT INTO listings (hunt_id, hunt_item_id, business_id,
                    seller_id, url, title, seller, price, currency, unit, city,
@@ -140,14 +175,14 @@ def _store(bid: int, hid: int, item: dict, rows: list[dict],
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (hid, item["id"], bid, sid, c.get("url", ""),
                  (c.get("title") or "")[:200], (c.get("seller") or "")[:120],
-                 c.get("price"), c.get("currency", ""), item["unit"],
+                 c.get("price"), c.get("currency", ""), unit,
                  (c.get("city") or city)[:120],
                  c.get("in_stock", "unknown"), (c.get("delivery") or "")[:200],
                  c.get("image", ""), phone,
                  verified, (c.get("note") or "")[:200]))
             conn.commit()
             out.append({"id": cur.lastrowid, "price": c.get("price"),
-                        "unit": item["unit"], "verified": verified,
+                        "unit": unit, "verified": verified,
                         "seller": c.get("seller") or "",
                         "delivery": c.get("delivery") or "",
                         "in_stock": c.get("in_stock", "unknown")})

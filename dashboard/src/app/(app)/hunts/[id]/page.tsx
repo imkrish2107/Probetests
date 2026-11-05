@@ -638,8 +638,8 @@ function Construction({
         ) : (
           <>
             <p className="muted">
-              AI vendor calls aren’t switched on yet. Ask vendors on WhatsApp, or call them yourself.
-              Most vendors don’t publish prices, so “Quote needed” is normal.
+              Call or message a vendor where a phone number was found. Otherwise open their listing.
+              Prices marked “web search” came from search results, so confirm them with the vendor.
             </p>
             {vendors.items.filter((g: any) => g.listings.length > 0).map((g: any) => (
               <div key={g.item} style={{ marginTop: 22 }}>
@@ -665,34 +665,48 @@ function Construction({
                         <tr key={l.id}>
                           <td>
                             <a href={l.url} target="_blank" rel="noreferrer">
-                              {l.seller || l.title || "Open listing"}
+                              {l.seller || l.title || hostOf(l.url)}
                             </a>
                             <br />
-                            <span className="muted small">{l.city}</span>
+                            <span className="muted small">
+                              {[l.city, l.whatsapp && `+${phoneDigits(l.whatsapp)}`].filter(Boolean).join(" · ")}
+                            </span>
                           </td>
                           <td>
                             {money(l.price, l.currency) ? (
                               <>
                                 <span className="price">{money(l.price, l.currency)}</span>
                                 {l.unit && <span className="muted small"> / {l.unit}</span>}
+                                {!l.verified && (
+                                  <>
+                                    <br />
+                                    <span className="muted small">web search</span>
+                                  </>
+                                )}
                               </>
                             ) : (
                               <span className="muted">{(l.verify_note || "").startsWith("Couldn't check") ? "Couldn’t check" : "Quote needed"}</span>
                             )}
                           </td>
-                          <td>{l.delivery || "—"}</td>
+                          <td>{l.delivery && !l.delivery.includes("<") ? l.delivery : "—"}</td>
                           <td>
                             {l.is_best && <span className="pill ok">Best</span>}{" "}
                             {l.is_cheapest && <span className="pill">Cheapest</span>}
                           </td>
                           <td>
                             <div className="actions">
-                              <a className="btn small" href={`/hunts/${hunt.id}?quote=${l.id}#quotes`}>
-                                Ask for quote
-                              </a>
-                              {l.whatsapp && (
-                                <a className="btn ghost small" href={`tel:+${String(l.whatsapp).replace(/\D/g, "")}`}>
-                                  Call
+                              {l.whatsapp ? (
+                                <>
+                                  <a className="btn small" href={`tel:+${phoneDigits(l.whatsapp)}`}>
+                                    Call
+                                  </a>
+                                  <a className="btn ghost small" href={`/hunts/${hunt.id}?quote=${l.id}#quotes`}>
+                                    Message
+                                  </a>
+                                </>
+                              ) : (
+                                <a className="btn ghost small" href={l.url} target="_blank" rel="noreferrer">
+                                  Open listing
                                 </a>
                               )}
                             </div>
@@ -714,6 +728,18 @@ function Construction({
   );
 }
 
+function phoneDigits(phone: unknown) {
+  return String(phone ?? "").replace(/\D/g, "");
+}
+
+function hostOf(url: string) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "Open listing";
+  }
+}
+
 function imageNum(name: string) {
   return name.match(/_concept_(\d+)/)?.[1] ?? "1";
 }
@@ -724,7 +750,26 @@ async function AskQuote({ huntId, listingId, vendors }: { huntId: number; listin
   return (
     <div className="sheet" style={{ marginBottom: 20 }}>
       <h3 style={{ marginBottom: 8 }}>Ask {l?.seller || "this vendor"} for a quote</h3>
-      {r?.preview ? (
+      {r?.preview && !l?.seller_opted_in && l?.whatsapp ? (
+        <>
+          <p className="muted">
+            This vendor hasn’t agreed to automated messages, so this opens in your own WhatsApp with the message ready to send:
+          </p>
+          <p><em>{r.preview}</em></p>
+          <p className="actions">
+            <a
+              className="btn"
+              href={`https://wa.me/${phoneDigits(l.whatsapp)}?text=${encodeURIComponent(r.preview)}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open in WhatsApp
+            </a>
+            <a href={`/hunts/${huntId}#quotes`}>Cancel</a>
+          </p>
+          <VendorPicker huntId={huntId} listingId={listingId} />
+        </>
+      ) : r?.preview ? (
         <>
           <p className="muted">The exact WhatsApp message that will be sent:</p>
           <p><em>{r.preview}</em></p>
